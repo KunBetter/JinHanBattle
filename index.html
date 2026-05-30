@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>汉金之战</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=Noto+Serif+SC:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="game-container">
+
+  <!-- 顶栏：指挥卷轴 -->
+  <div id="top-bar">
+    <!-- 左端轴杆 -->
+    <div id="axle-left"></div>
+    <!-- 卷面主体 -->
+    <div id="scroll-body">
+      <!-- 左侧：标题组 -->
+      <div id="title-group">
+        <span class="title-ornament left"></span>
+        <span id="title-text">漢金之戰</span>
+        <span class="title-ornament right"></span>
+        <span class="title-sep"></span>
+      </div>
+      <!-- 中央：阵营 VS 徽章 -->
+      <div id="vs-badge">
+        <span class="vs-han">漢</span>
+        <span class="vs-icon">⚔</span>
+        <span class="vs-jin">金</span>
+      </div>
+      <!-- 右侧：战场信息 -->
+      <div id="battle-info">
+        <div class="info-item" id="weather-info">
+          <span class="info-label">天氣</span>
+          <span id="weather-icon" class="info-value">☀️</span>
+        </div>
+        <div class="info-item" id="combo-info">
+          <span class="info-label">連擊</span>
+          <span id="combo-display" class="info-value"></span>
+        </div>
+        <div class="info-item" id="time-info">
+          <span class="info-label">時辰</span>
+          <span id="timer-display" class="info-value timer-value">00:00</span>
+        </div>
+        <div id="gold-badge">
+          <span class="gold-icon">◆</span>
+          <span id="gold-display"><span class="gold-value">0</span></span>
+        </div>
+        <button id="btn-mute" title="音效"><i class="icon-sound"></i></button>
+      </div>
+    </div>
+    <!-- 右端轴杆 -->
+    <div id="axle-right"></div>
+  </div>
+
+  <!-- 画布 -->
+  <canvas id="game-canvas" width="1100" height="550"></canvas>
+
+  <!-- 技能栏（战斗中显示） -->
+  <div id="skill-bar">
+    <button class="skill-token han-skill" id="btn-fire" disabled>
+      <span class="skill-icon">🔥</span>
+      <span class="skill-name">火攻</span>
+      <span class="skill-cost">◆50</span>
+      <div class="skill-cd-bar"><div class="skill-cd-fill fire-fill"></div></div>
+      <span class="skill-cd-text">就绪</span>
+    </button>
+    <button class="skill-token" id="btn-night" disabled>
+      <span class="skill-icon">🌙</span>
+      <span class="skill-name">夜战</span>
+      <span class="skill-cost">◆40</span>
+      <div class="skill-cd-bar"><div class="skill-cd-fill night-fill"></div></div>
+      <span class="skill-cd-text">就绪</span>
+    </button>
+    <button class="skill-token" id="btn-messenger" disabled>
+      <span class="skill-icon">📯</span>
+      <span class="skill-name">传令</span>
+      <span class="skill-cost">◆50</span>
+      <div class="skill-cd-bar"><div class="skill-cd-fill msg-fill"></div></div>
+      <span class="skill-cd-text">就绪</span>
+    </button>
+    <button class="skill-token ultimate" id="btn-decree" disabled>
+      <span class="skill-icon">👑</span>
+      <span class="skill-name">诏令</span>
+      <span class="skill-cost">◆100</span>
+      <div class="skill-cd-bar"><div class="skill-cd-fill decree-fill"></div></div>
+      <span class="skill-cd-text">就绪</span>
+    </button>
+  </div>
+
+  <!-- 战斗控制提示 -->
+  <div id="control-hint">点击己方单位选中 · 点击地面移动 · 点击敌军攻击 · 右键取消</div>
+
+  <!-- 兵种栏（部署中显示） — 令牌阵 -->
+  <div id="troop-bar">
+    <div id="token-grid">
+      <div class="troop-token" data-type="sword" data-cost="1">
+        <span class="token-icon">⚔️</span>
+        <span class="token-name">剑兵</span>
+        <span class="token-cost">◆1</span>
+        <span class="token-mark">▲ 选中</span>
+      </div>
+      <div class="troop-token" data-type="spear" data-cost="2">
+        <span class="token-icon">🔱</span>
+        <span class="token-name">矛兵</span>
+        <span class="token-cost">◆2</span>
+        <span class="token-mark">▲ 选中</span>
+      </div>
+      <div class="troop-token" data-type="halberd" data-cost="2">
+        <span class="token-icon">🗡️</span>
+        <span class="token-name">戟兵</span>
+        <span class="token-cost">◆2</span>
+        <span class="token-mark">▲ 选中</span>
+      </div>
+      <div class="troop-token" data-type="cavalry" data-cost="3">
+        <span class="token-icon">🐴</span>
+        <span class="token-name">骑兵</span>
+        <span class="token-cost">◆3</span>
+        <span class="token-mark">▲ 选中</span>
+      </div>
+      <div class="troop-token" data-type="ram" data-cost="3">
+        <span class="token-icon">🐏</span>
+        <span class="token-name">冲车</span>
+        <span class="token-cost">◆3</span>
+        <span class="token-mark">▲ 选中</span>
+      </div>
+      <div class="troop-token" data-type="catapult" data-cost="3">
+        <span class="token-icon">💣</span>
+        <span class="token-name">投石</span>
+        <span class="token-cost">◆3</span>
+        <span class="token-mark">▲ 选中</span>
+      </div>
+      <div class="troop-token" data-type="crossbow" data-cost="2">
+        <span class="token-icon">🏹</span>
+        <span class="token-name">弩兵</span>
+        <span class="token-cost">◆2</span>
+        <span class="token-mark">▲ 选中</span>
+      </div>
+      <div class="troop-token" data-type="shield" data-cost="2">
+        <span class="token-icon">🛡️</span>
+        <span class="token-name">盾兵</span>
+        <span class="token-cost">◆2</span>
+        <span class="token-mark">▲ 选中</span>
+      </div>
+      <div class="troop-token" data-type="strategist" data-cost="3">
+        <span class="token-icon">📜</span>
+        <span class="token-name">军师</span>
+        <span class="token-cost">◆3</span>
+        <span class="token-mark">▲ 选中</span>
+      </div>
+    </div>
+    <div id="deploy-actions">
+      <div id="points-display">
+        <span class="points-label">兵符</span>
+        <span id="points-num">60</span>
+        <span class="points-total">/ 60</span>
+      </div>
+      <button id="btn-auto-deploy" class="aux-btn">自动布阵</button>
+      <button id="btn-start-battle" class="action-btn">出 战</button>
+    </div>
+  </div>
+
+  <!-- 开始画面覆盖层 -->
+  <div id="overlay-start" class="overlay">
+    <div class="overlay-bg-pattern"></div>
+    <div class="overlay-content">
+      <div class="title-frame">
+        <div class="frame-corner tl"></div>
+        <div class="frame-corner tr"></div>
+        <h1 class="title-big">汉金之战</h1>
+        <div class="frame-corner bl"></div>
+        <div class="frame-corner br"></div>
+      </div>
+      <p class="subtitle">古代峡谷攻城战</p>
+      <div class="title-divider"></div>
+      <button id="btn-start-game" class="big-btn">开始游戏</button>
+      <div id="achievements-row"></div>
+    </div>
+  </div>
+
+  <!-- 选边 + 选图 合并画面 -->
+  <div id="overlay-setup" class="overlay hidden">
+    <div class="overlay-bg-pattern"></div>
+    <div class="overlay-content">
+      <h2 class="setup-title">选择阵营与战场</h2>
+      <div class="title-divider"></div>
+      <div class="setup-sections">
+        <div class="setup-section">
+          <h3>选择阵营</h3>
+          <div class="side-options">
+            <button id="btn-han" class="side-btn han-bg">
+              <span class="side-icon">漢</span>
+              <span class="side-name">汉</span>
+              <span class="side-role">攻方</span>
+              <span class="side-desc">攻城掠地 · 火攻夜战</span>
+            </button>
+            <button id="btn-jin" class="side-btn jin-bg">
+              <span class="side-icon">金</span>
+              <span class="side-name">金</span>
+              <span class="side-role">守方</span>
+              <span class="side-desc">固守城池 · 坚壁清野</span>
+            </button>
+          </div>
+        </div>
+        <div class="setup-section">
+          <h3>选择战场</h3>
+          <div class="side-options">
+            <button id="btn-canyon" class="side-btn map-canyon">
+              <span class="side-icon">谷</span>
+              <span class="side-name">峡谷</span>
+              <span class="side-role">开阔地形</span>
+              <span class="side-desc">岩壁峡谷 · 草地战场</span>
+            </button>
+            <button id="btn-forest" class="side-btn map-forest">
+              <span class="side-icon">林</span>
+              <span class="side-name">森林</span>
+              <span class="side-role">茂密林地</span>
+              <span class="side-desc">密林掩护 · 沼泽陷阱</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <button id="btn-confirm-setup" class="big-btn" disabled>开始部署</button>
+    </div>
+  </div>
+
+  <!-- 胜利画面覆盖层 — 战报奏章 -->
+  <div id="overlay-victory" class="overlay hidden">
+    <div class="overlay-bg-pattern"></div>
+    <div class="overlay-content">
+      <!-- 奏章容器 -->
+      <div id="scroll-report">
+        <div class="report-border top"></div>
+        <h1 id="victory-title"></h1>
+        <p id="victory-subtitle" class="report-subtitle"></p>
+        <!-- 印章 -->
+        <div id="victory-seal"><span id="seal-text">勝</span></div>
+        <!-- 统计面板 -->
+        <div id="report-stats">
+          <div class="stat-row"><span>用時</span><span id="stat-time"></span></div>
+          <div class="stat-row"><span>殲敵</span><span id="stat-kills"></span></div>
+          <div class="stat-row"><span>城門</span><span id="stat-gate"></span></div>
+          <div class="stat-row"><span>最高連擊</span><span id="stat-combo"></span></div>
+          <div class="stat-sep"></div>
+          <div class="stat-row gold-row"><span>賞金</span><span id="stat-gold"></span></div>
+        </div>
+        <!-- 成就 -->
+        <div id="victory-achievements"></div>
+        <!-- 再战按钮 -->
+        <button id="btn-replay" class="big-btn">再 戰</button>
+        <div class="report-border bottom"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="assets.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
