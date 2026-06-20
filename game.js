@@ -25,6 +25,7 @@ const TROOP_DEFS = {
   cavalry:  { name: '骑兵', emoji: '🐴', cost: 3, hp: 90,  atk: 20, speed: 2.5, range: 35,  color: '#C0392B', desc: '快速机动' },
   ram:       { name: '撞门器', emoji: '🐏', cost: 3, hp: 200, atk: 40, speed: 1.0, range: 25,  color: '#5D4037', desc: '对城门3×伤害' },
   catapult:  { name: '投石器', emoji: '💣', cost: 3, hp: 60,  atk: 35, speed: 0.5, range: 250, color: '#7F8C8D', desc: '远程范围伤害' },
+  dragon:    { name: '巨龙',   emoji: '🐉', cost: 8, hp: 300, atk: 60, speed: 1.2, range: 180, color: '#E74C3C', desc: '天空霸主，范围火焰攻击', auraRange: 90 },
   crossbow:  { name: '弩兵',   emoji: '🏹', cost: 2, hp: 70,  atk: 22, speed: 0.9, range: 120, color: '#2ECC71', desc: '远程快速射击', atkSpeed: 0.6 },
   shield:    { name: '盾兵',   emoji: '🛡️', cost: 2, hp: 180, atk: 10, speed: 0.6, range: 25,  color: '#3498DB', desc: '高防御坦克', blockChance: 0.5, blockPct: 0.3 },
   strategist:{ name: '军师',   emoji: '📜', cost: 3, hp: 50,  atk: 8,  speed: 0.8, range: 200, color: '#E91E63', desc: '范围攻速光环', auraRange: 80, atkAura: 0.2, spdAura: 0.9 },
@@ -421,6 +422,7 @@ class Game {
   }
 
   _startGameLoop() {
+    var self = this;
     const loop = (timestamp) => {
       if (this.state === State.BATTLE || this.state === State.NIGHT_BATTLE) {
         if (!this._lastBattleTime) this._lastBattleTime = timestamp;
@@ -428,10 +430,27 @@ class Game {
         this._lastBattleTime = timestamp;
         this._updateBattle(dt);
       }
+      // Dragon fire breath visual — runs in ALL states
+      this._updateDragonFire(timestamp);
       this._render();
       this._loopId = requestAnimationFrame(loop);
     };
     this._loopId = requestAnimationFrame(loop);
+  }
+
+  // Dragon fire breath visual effect (independent of battle state)
+  _updateDragonFire(timestamp) {
+    if (!this.units) return;
+    var now = timestamp / 1000;
+    if (!this._lastDragonFire) this._lastDragonFire = 0;
+    if (now - this._lastDragonFire < 0.5) return; // every 0.5s
+    this._lastDragonFire = now;
+    for (var i = 0; i < this.units.length; i++) {
+      var u = this.units[i];
+      if (u.type === 'dragon' && u.hp > 0) {
+        this._dragonFireBreath(u, u.x + (Math.random()-0.5)*80, u.y + 50 + Math.random()*30);
+      }
+    }
   }
 
   // ---- 存档（localStorage） ----
@@ -851,7 +870,7 @@ class Game {
       type: this.selectedType,
       name: SOLDIER_NAMES[Math.floor(Math.random() * SOLDIER_NAMES.length)],
       x: this.mouseX,
-      y: this.mouseY,
+      y: this.selectedType === 'dragon' ? Math.max(200, Math.min(260, this.mouseY)) : this.mouseY,
       hp: def.hp,
       maxHP: def.hp,
       side: this.playerSide,
@@ -1098,9 +1117,11 @@ class Game {
       const vx = (dx / dist) * spd * 60 * dt;
       const vy = (dy / dist) * spd * 60 * dt;
       const nx = u.x + vx, ny = u.y + vy;
-      if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny; }
+      var isFlying = u.type === 'dragon';
+      if (isFlying) { u.x = nx; u.y = Math.max(200, Math.min(300, ny)); }
+      else if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny; }
       else if (u.atkCooldown <= 0) { this._attackObstacle(u, def); }
-      u.y = Math.max(290, Math.min(480, u.y));
+      if (!isFlying) u.y = Math.max(290, Math.min(480, u.y));
       return;
     }
 
@@ -1131,9 +1152,11 @@ class Game {
         const vx = (dx / dist) * spd * 60 * dt;
         const vy = (dy / dist) * spd * 60 * dt;
         const nx = u.x + vx, ny = u.y + vy;
-        if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny; }
+        var isFlying2 = u.type === 'dragon';
+        if (isFlying2) { u.x = nx; u.y = Math.max(200, Math.min(300, ny)); }
+        else if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny; }
         else if (u.atkCooldown <= 0) { this._attackObstacle(u, def); }
-        u.y = Math.max(290, Math.min(480, u.y));
+        if (!isFlying2) u.y = Math.max(290, Math.min(480, u.y));
       }
       return;
     }
@@ -1180,9 +1203,11 @@ class Game {
         const vx = (dx / dist) * spd * 60 * dt;
         const vy = (dy / dist) * spd * 60 * dt;
         const nx = u.x + vx, ny = u.y + vy;
-        if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny; }
+        var isFlying2 = u.type === 'dragon';
+        if (isFlying2) { u.x = nx; u.y = Math.max(200, Math.min(300, ny)); }
+        else if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny; }
         else if (u.atkCooldown <= 0) { this._attackObstacle(u, def); }
-        u.y = Math.max(290, Math.min(480, u.y));
+        if (!isFlying2) u.y = Math.max(290, Math.min(480, u.y));
       }
       return;
     }
@@ -1190,6 +1215,10 @@ class Game {
 
   // 执行一次攻击（复用攻击逻辑）
   _doAttack(u, def, target, hasAtkAura, isGate) {
+    // Dragon breathes fire at target
+    if (u.type === 'dragon' && !isGate) {
+      this._dragonFireBreath(u, target.x, target.y);
+    }
     let dmg = def.atk;
     if (u.type === 'spear' && target.type === 'cavalry') dmg *= 2;
     if (this._pickupBuffs.atk > 0 && u.side === this.playerSide) dmg *= 1.5;
@@ -1223,7 +1252,55 @@ class Game {
     if (target.hp <= 0) {
       target.hp = 0;
       target._deathTime = this.battleElapsed;
+      // 下载的 PNG 爆炸特效（大型单位/暴击击杀）
+      if (isCrit || u.type === 'catapult' || target.type === 'ram' || target.type === 'catapult') {
+        this.particles.push({
+          x: target.x, y: target.y, vx: 0, vy: 0,
+          life: 0.5, maxLife: 0.5,
+          color: null, size: 40 + Math.random() * 20,
+          type: 'explosion_png',
+        });
+      }
       this._onKill(target, u.type);
+    }
+  }
+
+  // 巨龙吐火 — spawn flame particle stream toward target
+  _dragonFireBreath(u, tx, ty) {
+    var dx = tx - u.x;
+    var dy = ty - u.y;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    var steps = Math.floor(dist / 10);
+    var sheet = Assets.get('fire_breath');
+    for (var i = 0; i < steps; i++) {
+      var t = i / steps;
+      var px = u.x + dx * t + (Math.random() - 0.5) * 30;
+      var py = u.y + dy * t + (Math.random() - 0.5) * 15;
+      this.particles.push({
+        x: px, y: py,
+        vx: (Math.random() - 0.5) * 20,
+        vy: (Math.random() - 0.5) * 20 - 30,
+        life: 0.8 + Math.random() * 0.7,
+        maxLife: 1.5,
+        color: null,
+        size: 12 + Math.random() * 16,
+        type: 'fire_breath',
+        data: { frameIdx: Math.floor(Math.random() * 12) }
+      });
+    }
+    // Impact fire burst
+    for (var j = 0; j < 8; j++) {
+      this.particles.push({
+        x: tx, y: ty,
+        vx: (Math.random() - 0.5) * 80,
+        vy: (Math.random() - 0.5) * 80 - 40,
+        life: 0.4 + Math.random() * 0.3,
+        maxLife: 0.7,
+        color: null,
+        size: 10 + Math.random() * 18,
+        type: 'fire_breath',
+        data: { frameIdx: Math.floor(Math.random() * 12) }
+      });
     }
   }
 
@@ -1271,8 +1348,15 @@ class Game {
       });
     }
 
-    // 城门额外碎片
+    // 城门额外碎片 + PNG爆炸
     if (isGate) {
+      // PNG 爆炸特效
+      this.particles.push({
+        x: tx, y: ty, vx: 0, vy: 0,
+        life: 0.5, maxLife: 0.5,
+        color: null, size: 45 + Math.random() * 15,
+        type: 'explosion_png',
+      });
       for (let i = 0; i < 6; i++) {
         this.particles.push({
           x: tx + (Math.random() - 0.5) * 30,
@@ -1296,14 +1380,14 @@ class Game {
 
     if (this.playerSide === 'han') {
       this._executeDeployPlan([
-        'catapult','catapult','crossbow','crossbow','crossbow',
+        'catapult','dragon','crossbow','crossbow','crossbow',
         'ram','ram','cavalry','cavalry','cavalry',
         'strategist','shield','shield','halberd','halberd',
         'spear','spear','spear','sword','sword','sword','sword',
       ]);
     } else {
       this._executeDeployPlan([
-        'catapult','catapult','crossbow','crossbow','crossbow',
+        'catapult','dragon','crossbow','crossbow','crossbow',
         'strategist','shield','shield','shield','halberd',
         'halberd','cavalry','cavalry','cavalry','spear',
         'spear','spear','sword','sword','sword','sword',
@@ -1315,7 +1399,7 @@ class Game {
 
   _executeDeployPlan(plan) {
     let pts = DEPLOY_POINTS;
-    const zone = this.playerSide === 'han'
+    const baseZone = this.playerSide === 'han'
       ? { xMin: 80, xMax: 460, yMin: 300, yMax: 470 }
       : { xMin: 520, xMax: 800, yMin: 300, yMax: 470 };
 
@@ -1323,11 +1407,14 @@ class Game {
       const def = TROOP_DEFS[type];
       if (pts < def.cost) continue;
 
+      // Dragons deploy in the air (y: 200-260), others on ground (y: 300-470)
+      const isDragon = type === 'dragon';
+
       // 找到不重叠的位置
       let placed = false;
       for (let attempt = 0; attempt < 50; attempt++) {
-        const x = zone.xMin + Math.random() * (zone.xMax - zone.xMin);
-        const y = zone.yMin + Math.random() * (zone.yMax - zone.yMin);
+        const x = baseZone.xMin + Math.random() * (baseZone.xMax - baseZone.xMin);
+        const y = isDragon ? (200 + Math.random() * 60) : (baseZone.yMin + Math.random() * (baseZone.yMax - baseZone.yMin));
         const tooClose = this.units.some(u => {
           const dx = u.x - x;
           const dy = u.y - y;
@@ -1412,35 +1499,38 @@ class Game {
 
   _spawnAIUnits() {
     const playerCount = this.units.filter(u => u.side === this.playerSide).length;
-    const zone = this.aiSide === 'han'
+    var aiIsDragon = false;
+    var zone = this.aiSide === 'han'
       ? { xMin: 80, xMax: 460, yMin: 300, yMax: 470 }
       : { xMin: 520, xMax: 800, yMin: 300, yMax: 470 };
 
-    const plan = this._generateAIPlan(playerCount);
+    var plan = this._generateAIPlan(playerCount);
 
-    let pts = DEPLOY_POINTS;
-    for (const type of plan) {
-      const def = TROOP_DEFS[type];
-      if (pts < def.cost) continue;
-      for (let attempt = 0; attempt < 50; attempt++) {
-        const x = zone.xMin + Math.random() * (zone.xMax - zone.xMin);
-        const y = zone.yMin + Math.random() * (zone.yMax - zone.yMin);
-        const tooClose = this.units.some(u => {
-          const dx = u.x - x;
-          const dy = u.y - y;
-          return Math.sqrt(dx*dx + dy*dy) < 45;
+    var pts2 = DEPLOY_POINTS;
+    for (var ti2 = 0; ti2 < plan.length; ti2++) {
+      var type2 = plan[ti2];
+      var def2 = TROOP_DEFS[type2];
+      if (pts2 < def2.cost) continue;
+      var isDragonAI = type2 === 'dragon';
+      for (var attempt2 = 0; attempt2 < 50; attempt2++) {
+        var x2 = zone.xMin + Math.random() * (zone.xMax - zone.xMin);
+        var y2 = isDragonAI ? 200 + Math.random() * 60 : zone.yMin + Math.random() * (zone.yMax - zone.yMin);
+        var tooClose2 = this.units.some(function(u2) {
+          var dx2 = u2.x - x2;
+          var dy2 = u2.y - y2;
+          return Math.sqrt(dx2*dx2 + dy2*dy2) < 45;
         });
-        if (!tooClose) {
+        if (!tooClose2) {
           this.units.push({
-            type, name: SOLDIER_NAMES[Math.floor(Math.random() * SOLDIER_NAMES.length)],
-            x, y, hp: def.hp, maxHP: def.hp,
+            type: type2, name: SOLDIER_NAMES[Math.floor(Math.random() * SOLDIER_NAMES.length)],
+            x: x2, y: y2, hp: def2.hp, maxHP: def2.hp,
             side: this.aiSide, state: 'idle',
             targetX: null, targetY: null, atkCooldown: 0,
-            _sprite: Assets.get('unit_' + this.aiSide + '_' + type),
+            _sprite: Assets.get('unit_' + this.aiSide + '_' + type2),
             _bobPhase: Math.random() * Math.PI * 2,
             _attackFlash: 0,
           });
-          pts -= def.cost;
+          pts2 -= def2.cost;
           break;
         }
       }
@@ -1452,7 +1542,7 @@ class Game {
     let budget = DEPLOY_POINTS;
 
     // Always try to include strategist and catapult for tactical variety
-    const priorityTypes = ['strategist', 'catapult'];
+    const priorityTypes = ['strategist', 'catapult', 'dragon'];
     for (const type of priorityTypes) {
       if (plan.length < targetCount && TROOP_DEFS[type].cost <= budget) {
         plan.push(type);
@@ -1646,21 +1736,14 @@ class Game {
 
   // ---- 成就渲染 ----
   _renderAchievements() {
-    const badges = [
-      { key: 'first_win', icon: '初', name: '初出茅庐' },
-      { key: 'combo_8', icon: '连', name: '连击大师' },
-      { key: 'speed_120', icon: '速', name: '闪电战' },
-      { key: 'gate_80', icon: '壁', name: '铜墙铁壁' },
-      { key: 'all_skills', icon: '全', name: '火力全开' },
-      { key: 'catapult_5', icon: '瞄', name: '弹无虚发' },
-      { key: 'decree_win', icon: '诏', name: '诏令之主' },
-      { key: 'all_done', icon: '极', name: '全成就' },
-    ];
-
-    achievementsRow.innerHTML = badges.map(b => {
-      const unlocked = this.unlockedAchievements[b.key];
-      return `<span class="achievement-badge ${unlocked ? 'unlocked' : ''}" title="${b.name}${unlocked ? ' ✓' : ''}">${b.icon}</span>`;
-    }).join('');
+    var names = ['初出茅庐','连击大师','闪电战','铜墙铁壁','火力全开','弹无虚发','诏令之主','全成就'];
+    var keys  = ['first_win','combo_8','speed_120','gate_80','all_skills','catapult_5','decree_win','all_done'];
+    var html = '';
+    for (var i = 0; i < names.length; i++) {
+      var unlocked = this.unlockedAchievements[keys[i]];
+      html += '<span class="ach-tag' + (unlocked ? ' ach-done' : '') + '">' + (unlocked ? '✓' : '○') + ' ' + names[i] + '</span>';
+    }
+    achievementsRow.innerHTML = html;
   }
 
   // ============================================================
@@ -1823,8 +1906,8 @@ class Game {
           ctx.lineTo(x + 60, 0);
         }
         ctx.fill();
-        this._drawCloud(300, 60, 0.6, 'rgba(150,160,140,0.3)');
-        this._drawCloud(700, 50, 0.7, 'rgba(150,160,140,0.3)');
+        this._drawCloudPNG(300, 60, 0.6, 'rgba(150,160,140,0.3)');
+        this._drawCloudPNG(700, 50, 0.7, 'rgba(150,160,140,0.3)');
 
         // 闪电（使用 Math.random 保持动态）
         if (Math.random() < 0.15) {
@@ -1856,8 +1939,8 @@ class Game {
           ctx.lineTo(x + 60, 0);
         }
         ctx.fill();
-        this._drawCloud(300, 60, 0.7, 'rgba(160,180,160,0.4)');
-        this._drawCloud(700, 50, 0.8, 'rgba(160,180,160,0.4)');
+        this._drawCloudPNG(300, 60, 0.7, 'rgba(160,180,160,0.4)');
+        this._drawCloudPNG(700, 50, 0.8, 'rgba(160,180,160,0.4)');
       } else {
         // 晴朗森林天空 — 透过树冠的阳光
         const grad = ctx.createLinearGradient(0, 0, 0, 280);
@@ -1901,8 +1984,8 @@ class Game {
           ctx.fill();
         }
 
-        this._drawCloud(250, 50, 0.5, 'rgba(255,255,255,0.2)');
-        this._drawCloud(700, 40, 0.6, 'rgba(255,255,255,0.2)');
+        this._drawCloudPNG(250, 50, 0.5, 'rgba(255,255,255,0.2)');
+        this._drawCloudPNG(700, 40, 0.6, 'rgba(255,255,255,0.2)');
       }
       return;
     }
@@ -1917,28 +2000,32 @@ class Game {
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-      // 月亮 — 多层光晕
-      ctx.fillStyle = 'rgba(245,245,220,0.08)';
-      ctx.beginPath();
-      ctx.arc(150, 80, 70, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = 'rgba(245,245,220,0.15)';
-      ctx.beginPath();
-      ctx.arc(150, 80, 50, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#F5F5DC';
-      ctx.beginPath();
-      ctx.arc(150, 80, 35, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#08081E';
-      ctx.beginPath();
-      ctx.arc(162, 74, 30, 0, Math.PI * 2);
-      ctx.fill();
+      // 月亮 — PNG 纹理 (Kenney Background Elements, 85x85)
+      const moonPNG = Assets.get('png_moon');
+      if (moonPNG) {
+        // 外层光晕
+        ctx.fillStyle = 'rgba(245,245,220,0.08)';
+        ctx.beginPath(); ctx.arc(150, 80, 65, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(245,245,220,0.15)';
+        ctx.beginPath(); ctx.arc(150, 80, 45, 0, Math.PI * 2); ctx.fill();
+        // PNG 月亮本体 (85x85 -> 42x42)
+        ctx.drawImage(moonPNG, 150 - 21, 80 - 21, 42, 42);
+      } else {
+        // 后备程序化月亮
+        ctx.fillStyle = 'rgba(245,245,220,0.08)';
+        ctx.beginPath(); ctx.arc(150, 80, 70, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(245,245,220,0.15)';
+        ctx.beginPath(); ctx.arc(150, 80, 50, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#F5F5DC';
+        ctx.beginPath(); ctx.arc(150, 80, 35, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#08081E';
+        ctx.beginPath(); ctx.arc(162, 74, 30, 0, Math.PI * 2); ctx.fill();
+      }
 
-      // 夜空云雾
-      this._drawCloud(300, 60, 0.7, 'rgba(200,200,220,0.15)');
-      this._drawCloud(650, 45, 0.8, 'rgba(200,200,220,0.15)');
-      this._drawCloud(880, 70, 0.5, 'rgba(200,200,220,0.15)');
+      // 夜空云雾 — PNG 纹理
+      this._drawCloudPNG(300, 60, 0.7, 'rgba(200,200,220,0.15)');
+      this._drawCloudPNG(650, 45, 0.8, 'rgba(200,200,220,0.15)');
+      this._drawCloudPNG(880, 70, 0.5, 'rgba(200,200,220,0.15)');
 
       // 闪烁星星
       const starPositions = [[200,40],[400,70],[550,30],[750,55],[900,35],[1000,60],[350,90],[680,80],[820,50],[120,100]];
@@ -2009,9 +2096,9 @@ class Game {
         ctx.stroke();
       }
 
-      this._drawCloud(300, 60, 0.7, 'rgba(180,180,200,0.4)');
-      this._drawCloud(650, 45, 0.8, 'rgba(180,180,200,0.4)');
-      this._drawCloud(880, 70, 0.5, 'rgba(180,180,200,0.4)');
+      this._drawCloudPNG(300, 60, 0.7, 'rgba(180,180,200,0.4)');
+      this._drawCloudPNG(650, 45, 0.8, 'rgba(180,180,200,0.4)');
+      this._drawCloudPNG(880, 70, 0.5, 'rgba(180,180,200,0.4)');
     } else if (this._weather.type === 'rain') {
       const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
       grad.addColorStop(0, '#7A8B9A');
@@ -2020,9 +2107,9 @@ class Game {
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-      this._drawCloud(300, 60, 0.7, 'rgba(200,200,210,0.5)');
-      this._drawCloud(650, 45, 0.9, 'rgba(200,200,210,0.5)');
-      this._drawCloud(880, 70, 0.6, 'rgba(200,200,210,0.5)');
+      this._drawCloudPNG(300, 60, 0.7, 'rgba(200,200,210,0.5)');
+      this._drawCloudPNG(650, 45, 0.9, 'rgba(200,200,210,0.5)');
+      this._drawCloudPNG(880, 70, 0.6, 'rgba(200,200,210,0.5)');
 
       // 地面积水反光（雨天）
       if (this._weather && this._weather.type === 'rain' && this.state === 4) {
@@ -2044,45 +2131,54 @@ class Game {
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-      // 太阳 — 多层光晕
+      // 太阳 — PNG 纹理 (Kenney Background Elements, 87x86)
       const sunX = 150, sunY = 70;
-      ctx.fillStyle = 'rgba(255,255,220,0.15)';
-      ctx.beginPath();
-      ctx.arc(sunX, sunY, 90, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,200,0.25)';
-      ctx.beginPath();
-      ctx.arc(sunX, sunY, 65, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = 'rgba(255,250,180,0.5)';
-      ctx.beginPath();
-      ctx.arc(sunX, sunY, 48, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#FFF8DC';
-      ctx.beginPath();
-      ctx.arc(sunX, sunY, 38, 0, Math.PI * 2);
-      ctx.fill();
-
-      // 太阳光芒射线
-      ctx.save();
-      ctx.globalAlpha = 0.06;
-      for (let i = 0; i < 12; i++) {
-        const angle = (i / 12) * Math.PI * 2 + this.battleElapsed * 0.02;
-        const rayLen = 70 + (i % 3) * 30;
+      const sunPNG = Assets.get('png_sun');
+      if (sunPNG) {
+        // 外层光晕（程序化增强）
+        ctx.fillStyle = 'rgba(255,255,220,0.12)';
+        ctx.beginPath(); ctx.arc(sunX, sunY, 70, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,200,0.2)';
+        ctx.beginPath(); ctx.arc(sunX, sunY, 50, 0, Math.PI * 2); ctx.fill();
+        // PNG 太阳本体 (87x86 -> 54x54)
+        ctx.drawImage(sunPNG, sunX - 27, sunY - 27, 54, 54);
+      } else {
+        // 后备程序化太阳
+        ctx.fillStyle = 'rgba(255,255,220,0.15)';
+        ctx.beginPath(); ctx.arc(sunX, sunY, 90, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,200,0.25)';
+        ctx.beginPath(); ctx.arc(sunX, sunY, 65, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(255,250,180,0.5)';
+        ctx.beginPath(); ctx.arc(sunX, sunY, 48, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = '#FFF8DC';
-        ctx.beginPath();
-        ctx.moveTo(sunX + Math.cos(angle - 0.04) * 38, sunY + Math.sin(angle - 0.04) * 38);
-        ctx.lineTo(sunX + Math.cos(angle) * rayLen, sunY + Math.sin(angle) * rayLen);
-        ctx.lineTo(sunX + Math.cos(angle + 0.04) * 38, sunY + Math.sin(angle + 0.04) * 38);
-        ctx.closePath();
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(sunX, sunY, 38, 0, Math.PI * 2); ctx.fill();
+        // 太阳光芒射线
+        ctx.save(); ctx.globalAlpha = 0.06;
+        for (let i = 0; i < 12; i++) {
+          const angle = (i / 12) * Math.PI * 2 + this.battleElapsed * 0.02;
+          const rayLen = 70 + (i % 3) * 30;
+          ctx.fillStyle = '#FFF8DC'; ctx.beginPath();
+          ctx.moveTo(sunX + Math.cos(angle - 0.04) * 38, sunY + Math.sin(angle - 0.04) * 38);
+          ctx.lineTo(sunX + Math.cos(angle) * rayLen, sunY + Math.sin(angle) * rayLen);
+          ctx.lineTo(sunX + Math.cos(angle + 0.04) * 38, sunY + Math.sin(angle + 0.04) * 38);
+          ctx.closePath(); ctx.fill();
+        }
+        ctx.restore();
       }
-      ctx.restore();
 
-      // 云朵
-      this._drawCloud(300, 60, 0.8);
-      this._drawCloud(650, 45, 1.0);
-      this._drawCloud(880, 70, 0.6);
+      // 云朵 — PNG 纹理
+      this._drawCloudPNG(300, 60, 0.8);
+      this._drawCloudPNG(650, 45, 1.0);
+      this._drawCloudPNG(880, 70, 0.6);
+
+      // 远山 — PNG 纹理 (Kenney Background Elements, 1001x128)
+      const hillsPNG = Assets.get('png_hills1');
+      if (hillsPNG) {
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.drawImage(hillsPNG, 0, 225, CANVAS_W, 55);
+        ctx.restore();
+      }
 
       // 热浪波纹 + 光柱（晴天战斗中）
       if (this._weather && this._weather.type === 'clear' && (this.state === 4 || this.state === 5)) {
@@ -2130,6 +2226,31 @@ class Game {
     ctx.arc(x + 48 * scale, y, 22 * scale, 0, Math.PI * 2);
     ctx.arc(x + 20 * scale, y + 5 * scale, 16 * scale, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  // 使用下载的 PNG 云朵纹理绘制云（带程序化回退）
+  _drawCloudPNG(x, y, scale, color) {
+    const clouds = [Assets.get('png_cloud1'), Assets.get('png_cloud2'),
+                    Assets.get('png_cloud3'), Assets.get('png_cloud4'),
+                    Assets.get('png_cloud5')];
+    // 基于 x,y 选择固定云朵变体
+    const idx = Math.floor((x * 7 + y * 13) % clouds.length);
+    const cloudPNG = clouds[idx];
+    if (cloudPNG) {
+      ctx.save();
+      if (color) {
+        // 从 rgba() 字符串提取 alpha 值
+        const m = color.match(/([\d.]+)\)\s*$/);
+        ctx.globalAlpha = m ? parseFloat(m[1]) : 0.9;
+      }
+      const w = cloudPNG.width * scale * 0.7;
+      const h = cloudPNG.height * scale * 0.7;
+      ctx.drawImage(cloudPNG, x - w / 2, y - h / 2, w, h);
+      ctx.restore();
+    } else {
+      // 回退到程序化云朵
+      this._drawCloud(x, y, scale, color);
+    }
   }
 
   _drawCanyon() {
@@ -2739,10 +2860,19 @@ class Game {
         ctx.textAlign = 'center';
         ctx.fillText('△', t.x + t.w/2, t.y + t.h/2 + 5);
       } else if (t.type === 'tree') {
-        // 使用树木精灵图
+        // 使用树木精灵图 (Kenney Nature Kit side-view tree 39x154)
         const treeSprite = Assets.get('sprite_tree');
         if (treeSprite) {
-          ctx.drawImage(treeSprite, t.x - 10, t.y - t.h / 2 - 20, t.w + 20, t.h + 40);
+          // 检测是否为 PNG 图像（Image vs Canvas）来决定绘制方式
+          const isPNG = treeSprite instanceof Image;
+          if (isPNG) {
+            // Kenney side-view tree: scale to fit terrain footprint
+            const tw = 32, th = 60;
+            ctx.drawImage(treeSprite, t.x - tw/2 + t.w/2, t.y - th + t.h/2 + 10, tw, th);
+          } else {
+            // 程序化后备: original canopy-style tree
+            ctx.drawImage(treeSprite, t.x - 10, t.y - t.h / 2 - 20, t.w + 20, t.h + 40);
+          }
         } else {
           const cx = t.x, cy = t.y, bw = t.w, bh = t.h;
           ctx.fillStyle = '#5D4037';
@@ -2779,10 +2909,18 @@ class Game {
           ctx.fillRect(t.x - 5, t.y - t.h / 2 - 14, barW * Math.max(0.05, hpPct), barH);
         }
       } else if (t.type === 'bush') {
-        // 使用灌木精灵图
+        // 使用灌木精灵图 (Kenney Nature Kit plant_bushLarge 33x22)
         const bushSprite = Assets.get('sprite_bush');
         if (bushSprite) {
-          ctx.drawImage(bushSprite, t.x - 5, t.y - 10, t.w + 10, t.h + 14);
+          const isPNG = bushSprite instanceof Image;
+          if (isPNG) {
+            // Kenney bush: draw at natural aspect ratio within terrain footprint
+            const bw = t.w + 8, bh = t.h + 12;
+            ctx.drawImage(bushSprite, t.x - 4, t.y - 6, bw, bh);
+          } else {
+            // 程序化后备
+            ctx.drawImage(bushSprite, t.x - 5, t.y - 10, t.w + 10, t.h + 14);
+          }
         } else {
           const bcx = t.x + t.w/2, bcy = t.y + t.h/2;
           ctx.fillStyle = 'rgba(0,0,0,0.2)';
@@ -2920,7 +3058,9 @@ class Game {
           sx = -1;
         }
         ctx.scale(sx, sy);
-        ctx.drawImage(finalSprite, -24, -28, 48, 56);
+        const drawW = u.type === 'dragon' ? 72 : 48;
+        const drawH = u.type === 'dragon' ? 84 : 56;
+        ctx.drawImage(finalSprite, -drawW/2, -drawH/2, drawW, drawH);
         ctx.restore();
       }
 
@@ -3114,7 +3254,7 @@ class Game {
     const helmetColors = {
       sword: '#888', spear: '#777', halberd: '#666', cavalry: '#8B4513',
       ram: '#5D4037', catapult: '#7F8C8D', crossbow: '#556B2F',
-      shield: '#4A5568', strategist: '#2C3E50',
+      shield: '#4A5568', strategist: '#2C3E50', dragon: '#C0392B',
     };
     const hColor = helmetColors[u.type] || '#888';
 
@@ -3394,6 +3534,29 @@ class Game {
           this._drawLightning(ctx, p.data.sx, p.data.sy, p.data.tx, p.data.ty, p.color, p.size * alpha, 4, 4);
           break;
         }
+        case 'fire_breath': {
+          var fsheet = Assets.get('fire_breath');
+          if (fsheet) {
+            // fire1.png is 1112x1188 spritesheet — use a section as flame frame
+            var frameW = 120, frameH = 120;
+            var fIdx = p.data ? (p.data.frameIdx || 0) : 0;
+            var col = fIdx % 9;
+            var row = Math.floor(fIdx / 9);
+            ctx.drawImage(fsheet, col * frameW, row * frameH, frameW, frameH,
+                          p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
+          } else {
+            // Fallback: simple radial flame
+            var fgrad = ctx.createRadialGradient(p.x, p.y, p.size * 0.1, p.x, p.y, p.size);
+            fgrad.addColorStop(0, 'rgba(255,255,50,0.9)');
+            fgrad.addColorStop(0.5, 'rgba(255,100,0,0.6)');
+            fgrad.addColorStop(1, 'rgba(255,20,0,0)');
+            ctx.fillStyle = fgrad;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          break;
+        }
         case 'impact': {
           const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
           grad.addColorStop(0, 'rgba(255,255,255,0.9)');
@@ -3403,6 +3566,26 @@ class Game {
           ctx.beginPath();
           ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
           ctx.fill();
+          break;
+        }
+        case 'explosion_png': {
+          // 使用下载的像素爆炸精灵表（12帧，96x96 每帧）
+          const sheet = Assets.get('vfx_explosion');
+          if (sheet) {
+            const frameW = 96, frameH = 96;
+            const totalFrames = 12;
+            const frameIdx = Math.min(totalFrames - 1, Math.floor((1 - p.life / p.maxLife) * totalFrames));
+            const sx = frameIdx * frameW;
+            ctx.drawImage(sheet, sx, 0, frameW, frameH, p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
+          }
+          break;
+        }
+        case 'spell_png': {
+          // 使用下载的法术效果
+          const fx = Assets.get('vfx_spell');
+          if (fx) {
+            ctx.drawImage(fx, p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
+          }
           break;
         }
       }
@@ -3536,6 +3719,20 @@ class Game {
   // ============================================================
 
   _updateBattle(dt) {
+    // ---- 巨龙始终飞行在空中，并周期性吐火 ----
+    for (var i = 0; i < this.units.length; i++) {
+      var u = this.units[i];
+      if (u.type === 'dragon' && u.hp > 0) {
+        u.y = Math.max(200, Math.min(260, u.y));
+        // Periodic fire breath bursts
+        if (!u._lastFireTime) u._lastFireTime = 1.8; // fire almost immediately on spawn
+        u._lastFireTime += dt;
+        if (u._lastFireTime > 2.0) {
+          u._lastFireTime = 0;
+          this._dragonFireBreath(u, u.x + (Math.random()-0.5)*100, u.y + 40 + Math.random()*60);
+        }
+      }
+    }
     // ---- 计时器 ----
     this.battleElapsed += dt;
     const totalSec = Math.floor(this.battleElapsed);
@@ -4652,17 +4849,18 @@ class Game {
 // 启动
 // ============================================================
 
-try { Assets.generateAll(); } catch (e) { console.error('Asset gen failed:', e); }
-const game = new Game();
-
-// 响应式缩放
-function resize() {
-  const container = document.getElementById('game-container');
-  const scaleX = window.innerWidth / 1120;
-  const scaleY = window.innerHeight / 790;
-  const scale = Math.min(scaleX, scaleY, 1.15);
-  container.style.transform = `scale(${scale})`;
-  container.style.marginTop = '0px';
-}
-window.addEventListener('resize', resize);
-resize();
+Assets.init().then(function() {
+  window._game = new Game();
+  function resize() {
+    const container = document.getElementById('game-container');
+    const scaleX = window.innerWidth / 1120;
+    const scaleY = window.innerHeight / 790;
+    const scale = Math.min(scaleX, scaleY, 1.15);
+    container.style.transform = `scale(${scale})`;
+    container.style.marginTop = '0px';
+  }
+  window.addEventListener('resize', resize);
+  resize();
+}).catch(function(e) {
+  console.error('Failed to initialize assets:', e);
+});

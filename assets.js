@@ -13,6 +13,24 @@ const Assets = (() => {
   // Unit dimensions
   const U_W = 48, U_H = 56;
 
+  // ---- PNG image loading system (hybrid: PNG + procedural fallback) ----
+  const BASE = 'assets/sprites/';
+  const _pngCache = {};           // { key: HTMLImageElement } — loaded PNGs replace procedural
+
+  function _loadImage(url) {
+    return new Promise(function(resolve, reject) {
+      var img = new Image();
+      img.onload = function() { resolve(img); };
+      img.onerror = function() { reject(new Error('Failed to load: ' + url)); };
+      img.src = url;
+    });
+  }
+
+  // Fire-and-forget PNG loader — replaces procedural asset when loaded
+  function _lazyLoad(key, url) {
+    _loadImage(url).then(function(img) { _pngCache[key] = img; }).catch(function() {});
+  }
+
   /* ================================================================
      Helpers
      ================================================================ */
@@ -1307,20 +1325,135 @@ const Assets = (() => {
   }
 
   /* ================================================================
+     PNG-based Unit Sprite Generator
+     Uses downloaded Kenney soldier frames instead of procedural drawing.
+     ================================================================ */
+  
+
+  // Row index in rpg_characters_32x32.png for each unit type (12 cols x 21 rows, 32x32 cells)
+  var RPG_CHAR_ROWS = { sword:0, spear:1, halberd:2, cavalry:3, ram:4, catapult:5, crossbow:6, shield:7, strategist:8 };
+
+  function _makeUnitFromPNG(faction, type) {
+    if (type === 'dragon') return _makeDragonFromPNG(faction);
+
+    var sheet = _pngCache['rpg_chars_sheet'];
+    if (sheet) {
+      // Strip magenta (#FF00FF) bg from RPG Maker sheet, then draw clean
+      var tmp = _makeCanvas(32, 32);
+      var tctx = _ctx(tmp);
+      var row = RPG_CHAR_ROWS[type] || 0;
+      tctx.drawImage(sheet, 0, row * 32, 32, 32, 0, 0, 32, 32);
+      var imgData = tctx.getImageData(0, 0, 32, 32);
+      var d = imgData.data;
+      for (var i = 0; i < d.length; i += 4) {
+        if (d[i] === 255 && d[i+1] === 0 && d[i+2] === 255) d[i+3] = 0;
+      }
+      tctx.putImageData(imgData, 0, 0);
+
+      var c = _makeCanvas(U_W, U_H);
+      var ctx2 = _ctx(c);
+      ctx2.drawImage(tmp, 0, 0, 32, 32, 4, 4, U_W - 8, U_H - 8);
+      ctx2.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx2.beginPath();
+      ctx2.ellipse(U_W/2, U_H-3, 12, 3, 0, 0, Math.PI * 2);
+      ctx2.fill();
+      return c;
+    }
+
+    // Fallback: detailed procedural soldier (original drawing)
+    return _drawUnitSprite(faction, { type: type });
+  }
+
+  // Dragon unit — uses downloaded Knight Princess Dragon2 frames (314x214)
+  function _makeDragonFromPNG(faction) {
+    // Chinese dragon sprite: 32x64 sheet (2 frames of 32x32)
+    var DW = U_W * 2, DH = U_H * 2;
+    var c = _makeCanvas(DW, DH);
+    var ctx2 = _ctx(c);
+
+    var sheet = _pngCache['dragon_cn'];
+    if (sheet) {
+      // Strip magenta background, same as RPG characters
+      var tmp = _makeCanvas(32, 32);
+      var tctx = _ctx(tmp);
+      tctx.drawImage(sheet, 0, 0, 32, 32, 0, 0, 32, 32);
+      var imgData = tctx.getImageData(0, 0, 32, 32);
+      var d = imgData.data;
+      for (var i = 0; i < d.length; i += 4) {
+        if (d[i] === 255 && d[i+1] === 0 && d[i+2] === 255) d[i+3] = 0;
+      }
+      tctx.putImageData(imgData, 0, 0);
+      // Draw Chinese dragon large, centered
+      ctx2.drawImage(tmp, 0, 0, 32, 32, 8, 8, DW - 16, DH - 16);
+    } else {
+      // Fallback: simple dragon shape in faction color
+      var fc2 = FACTION[faction];
+      ctx2.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx2.beginPath();
+      ctx2.ellipse(DW/2, DH-2, 30, 5, 0, 0, Math.PI * 2);
+      ctx2.fill();
+      ctx2.fillStyle = fc2;
+      ctx2.beginPath();
+      ctx2.moveTo(DW/2, 0);
+      ctx2.quadraticCurveTo(DW, DH/2, DW/2-5, DH-10);
+      ctx2.quadraticCurveTo(DW/2, DH-30, DW/2+30, DH-10);
+      ctx2.fill();
+    }
+
+    // Shadow
+    ctx2.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx2.beginPath();
+    ctx2.ellipse(DW/2, DH-2, 30, 6, 0, 0, Math.PI * 2);
+    ctx2.fill();
+
+    return c;
+  }
+
+  /* ================================================================
      Batch Generation & Public API
      ================================================================ */
 
-  function generateAll() {
-    // Unit sprites
-    const unitTypes = ['sword','spear','halberd','cavalry','ram','catapult','crossbow','shield','strategist'];
-    for (const type of unitTypes) {
-      cache[`unit_han_${type}`] = _drawUnitSprite('han', { type });
-      cache[`unit_jin_${type}`] = _drawUnitSprite('jin', { type });
+  async function init() {
+    const unitTypes = ['sword','spear','halberd','cavalry','ram','catapult','crossbow','shield','strategist','dragon'];
+
+    // ===== Step 1: Generate procedural textures & sprites instantly =====
+    cache.sprite_flag_han = _makeFlagSprite('han');
+    cache.sprite_flag_jin = _makeFlagSprite('jin');
+    cache.sprite_chest    = _makeChestSprite();
+    cache.texture_grass  = _makeGrassTexture();
+    cache.texture_ground = _makeGroundTexture();
+    cache.texture_stone  = _makeStoneTexture();
+    cache.texture_wood   = _makeWoodTexture();
+    cache.texture_rock   = _makeRockTexture();
+    cache.texture_leaf   = _makeLeafTexture();
+    cache.texture_path   = _makePathTexture();
+    cache.texture_bark   = _makeBarkTexture();
+    cache.sprite_tree    = _makeTreeSprite();
+    cache.sprite_bush    = _makeBushSprite();
+
+    // ===== Step 2: Load RPG sheet (BLOCKING — guarantees PNG units) =====
+    try {
+      // Load RPG sheet + Chinese dragon in parallel (fire1 loaded lazily)
+      var results = await Promise.all([
+        _loadImage(BASE + 'characters/rpg_characters_32x32.png'),
+        _loadImage(BASE + 'dragons/chinese/chinese_dragon_sprite.png')
+      ]);
+      _pngCache['rpg_chars_sheet'] = results[0];
+      _pngCache['dragon_cn'] = results[1];
+      console.log('[Assets] RPG sheet loaded — generating PNG-based units');
+    } catch(e) {
+      console.error('[Assets] RPG sheet failed to load — cannot proceed');
+      throw e;
     }
 
-    // 2x upsample: 生成 96x112 高分辨率版本，Canvas 渲染时自动降采样变清晰
+    // ===== Step 3: Generate ALL units from loaded RPG sheet =====
+    for (const type of unitTypes) {
+      cache[`unit_han_${type}`] = _makeUnitFromPNG('han', type);
+      cache[`unit_jin_${type}`] = _makeUnitFromPNG('jin', type);
+    }
     const unitKeys = Object.keys(cache).filter(k => k.startsWith('unit_'));
     for (const key of unitKeys) {
+      if (key.includes('dragon')) continue;
       const orig = cache[key];
       const c2x = _makeCanvas(U_W * 2, U_H * 2);
       const ctx2x = _ctx(c2x);
@@ -1329,41 +1462,49 @@ const Assets = (() => {
       cache[key] = c2x;
     }
 
-    // Textures
-    cache.texture_stone  = _makeStoneTexture();
-    cache.texture_wood   = _makeWoodTexture();
-    cache.texture_ground = _makeGroundTexture();
-    cache.texture_grass  = _makeGrassTexture();
-    cache.texture_leaf   = _makeLeafTexture();
-    cache.texture_path   = _makePathTexture();
-    cache.texture_rock   = _makeRockTexture();
-    cache.texture_bark   = _makeBarkTexture();
+    console.log('[Assets] ' + Object.keys(cache).length + ' assets ready (' + Object.keys(_pngCache).length + ' PNG). Loading rest in background...');
 
-    // Environment sprites
-    cache.sprite_tree      = _makeTreeSprite();
-    cache.sprite_bush      = _makeBushSprite();
-    cache.sprite_flag_han  = _makeFlagSprite('han');
-    cache.sprite_flag_jin  = _makeFlagSprite('jin');
-    cache.sprite_chest     = _makeChestSprite();
-
-    console.log(`[Assets] Generated ${Object.keys(cache).length} sprites & textures.`);
+    // ===== Step 4: All other PNGs load in background =====
+    var B = BASE;
+    _lazyLoad('texture_grass',  B + 'terrain/_kenney_prototype_textures/PNG/Green/texture_06.png');
+    _lazyLoad('texture_ground', B + 'terrain/_kenney_prototype_textures/PNG/Dark/texture_03.png');
+    _lazyLoad('texture_stone',  B + 'castles/_kenney_medieval_platformer/Tilesheet/medieval_tilesheet_2X.png');
+    _lazyLoad('texture_wood',   B + 'terrain/_kenney_prototype_textures/PNG/Orange/texture_04.png');
+    _lazyLoad('texture_rock',   B + 'terrain/_kenney_prototype_textures/PNG/Dark/texture_02.png');
+    _lazyLoad('sprite_tree',    B + 'trees/_kenney_nature_kit/Side/tree_tall.png');
+    _lazyLoad('sprite_bush',    B + 'trees/_kenney_nature_kit/Side/plant_bushLarge.png');
+    _lazyLoad('png_sun',    B + 'celestial/_kenney_background_elements/PNG/sun.png');
+    _lazyLoad('png_moon',   B + 'celestial/_kenney_background_elements/PNG/moon_full.png');
+    _lazyLoad('png_cloud1', B + 'celestial/_kenney_background_elements/PNG/Flat/cloud1.png');
+    _lazyLoad('png_cloud2', B + 'celestial/_kenney_background_elements/PNG/Flat/cloud2.png');
+    _lazyLoad('png_cloud3', B + 'celestial/_kenney_background_elements/PNG/Flat/cloud3.png');
+    _lazyLoad('png_cloud4', B + 'celestial/_kenney_background_elements/PNG/Flat/cloud4.png');
+    _lazyLoad('png_cloud5', B + 'celestial/_kenney_background_elements/PNG/Flat/cloud5.png');
+    _lazyLoad('png_hills1', B + 'celestial/_kenney_background_elements/PNG/Flat/hills1.png');
+    _lazyLoad('vfx_explosion', B + 'vfx/pixel_explosion.png');
+    _lazyLoad('fire_breath',   B + 'vfx/fire1.png');
+    _lazyLoad('dragon_cn',     B + 'dragons/chinese/chinese_dragon_sprite.png');
+    
   }
 
-  function get(key) { return cache[key] || null; }
+  function get(key) {
+    if (_pngCache[key]) return _pngCache[key];
+    return cache[key] || null;
+  }
 
-  // On-demand unit sprite — returns cached or generates fresh
   function getOrGenerate(faction, type) {
-    const key = 'unit_' + faction + '_' + type;
+    var key = 'unit_' + faction + '_' + type;
+    if (_pngCache[key]) return _pngCache[key];
     if (cache[key]) return cache[key];
-    // Generate on the fly, then 2x upsample
-    const raw = _drawUnitSprite(faction, { type });
-    const c2x = _makeCanvas(U_W * 2, U_H * 2);
-    const ctx2x = _ctx(c2x);
+    var raw = _makeUnitFromPNG(faction, type);
+    if (type === 'dragon') { cache[key] = raw; return raw; }
+    var c2x = _makeCanvas(U_W * 2, U_H * 2);
+    var ctx2x = _ctx(c2x);
     ctx2x.imageSmoothingEnabled = false;
     ctx2x.drawImage(raw, 0, 0, U_W, U_H, 0, 0, U_W * 2, U_H * 2);
     cache[key] = c2x;
     return c2x;
   }
 
-  return { generateAll, get, getOrGenerate };
+  return { init: init, get: get, getOrGenerate: getOrGenerate };
 })();
