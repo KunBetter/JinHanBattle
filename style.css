@@ -959,23 +959,27 @@ body {
 #achievements-row {
   margin-top: 28px;
   display: flex;
-  gap: 6px 14px;
+  gap: 8px 10px;
   justify-content: center;
   flex-wrap: wrap;
 }
 
 .ach-tag {
-  font-family: "Songti SC", "STSong", "SimSun", "PingFang SC", serif;
-  font-size: 13px;
+  padding: 4px 12px;
+  border-radius: 10px;
+  font-size: 12px;
   font-weight: 600;
-  color: rgba(180,160,130,0.45);
-  white-space: nowrap;
   letter-spacing: 0.5px;
+  white-space: nowrap;
+  background: rgba(255,255,255,0.10);
+  color: rgba(210,200,180,0.75);
+  border: 1px solid rgba(255,255,255,0.10);
 }
 .ach-tag.ach-done {
-  color: #D4A84B;
+  background: linear-gradient(135deg, #D4A84B 0%, #B8860B 100%);
+  color: #2C1500;
   font-weight: 700;
-  text-shadow: 0 0 2px rgba(212,168,75,0.5), 0 0 6px rgba(212,168,75,0.2);
+  border-color: transparent;
 }
 
 /* ==============================================

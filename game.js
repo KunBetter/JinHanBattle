@@ -2,326 +2,6 @@
 // 汉金之战 — 古代攻城网页游戏
 // ============================================================
 
-const CANVAS_W = 1100;
-const CANVAS_H = 550;
-const DEPLOY_POINTS = 60;
-const GATE_MAX_HP = 500;
-
-// ---- 游戏状态枚举 ----
-const State = Object.freeze({
-  START_SCREEN: 'START_SCREEN',
-  SIDE_SELECT: 'SIDE_SELECT',
-  DEPLOYMENT: 'DEPLOYMENT',
-  BATTLE: 'BATTLE',
-  NIGHT_BATTLE: 'NIGHT_BATTLE',
-  VICTORY: 'VICTORY',
-});
-
-// ---- 兵种定义 ----
-const TROOP_DEFS = {
-  sword:    { name: '剑兵', emoji: '⚔️', cost: 1, hp: 80,  atk: 15, speed: 1.2, range: 30,  color: '#E74C3C', desc: '基础步兵' },
-  spear:    { name: '矛兵', emoji: '🔱', cost: 2, hp: 100, atk: 18, speed: 0.9, range: 55,  color: '#E67E22', desc: '对骑兵2×伤害' },
-  halberd:  { name: '戟兵', emoji: '🗡️', cost: 2, hp: 120, atk: 22, speed: 0.7, range: 40,  color: '#8E44AD', desc: '高护甲坦克' },
-  cavalry:  { name: '骑兵', emoji: '🐴', cost: 3, hp: 90,  atk: 20, speed: 2.5, range: 35,  color: '#C0392B', desc: '快速机动' },
-  ram:       { name: '撞门器', emoji: '🐏', cost: 3, hp: 200, atk: 40, speed: 1.0, range: 25,  color: '#5D4037', desc: '对城门3×伤害' },
-  catapult:  { name: '投石器', emoji: '💣', cost: 3, hp: 60,  atk: 35, speed: 0.5, range: 250, color: '#7F8C8D', desc: '远程范围伤害' },
-  dragon:    { name: '巨龙',   emoji: '🐉', cost: 8, hp: 300, atk: 60, speed: 1.2, range: 180, color: '#E74C3C', desc: '天空霸主，范围火焰攻击', auraRange: 90 },
-  crossbow:  { name: '弩兵',   emoji: '🏹', cost: 2, hp: 70,  atk: 22, speed: 0.9, range: 120, color: '#2ECC71', desc: '远程快速射击', atkSpeed: 0.6 },
-  shield:    { name: '盾兵',   emoji: '🛡️', cost: 2, hp: 180, atk: 10, speed: 0.6, range: 25,  color: '#3498DB', desc: '高防御坦克', blockChance: 0.5, blockPct: 0.3 },
-  strategist:{ name: '军师',   emoji: '📜', cost: 3, hp: 50,  atk: 8,  speed: 0.8, range: 200, color: '#E91E63', desc: '范围攻速光环', auraRange: 80, atkAura: 0.2, spdAura: 0.9 },
-};
-
-const SOLDIER_NAMES = ['小虎','大壮','铁蛋','飞毛腿','石头','阿勇','冲锋','刚子','猛猛','小旋风'];
-
-const SKILL_DEFS = {
-  fire:      { name: '火攻', emoji: '🔥', cost: 50,  cooldown: 30, duration: 8,  desc: '城门附近燃起大火，灼烧敌军' },
-  night:     { name: '夜战', emoji: '🌙', cost: 40,  cooldown: 25, duration: 12, desc: '夜幕降临，提升己方暴击率' },
-  messenger: { name: '传令', emoji: '📯', cost: 50,  cooldown: 28, duration: 0,  desc: '召唤3-4名援军，己方全体加速' },
-  decree:    { name: '诏令', emoji: '👑', cost: 100, cooldown: 50, duration: 0,  desc: '敌军受百分比伤害并减速，己方攻击提升' },
-};
-
-const WEATHER_TYPES = {
-  clear: { name: '晴', emoji: '☀️', speedMul: 1.0, desc: '天气晴朗' },
-  rain:  { name: '雨', emoji: '🌧️', speedMul: 0.75, desc: '行军减缓' },
-  wind:  { name: '风', emoji: '💨', speedMul: 1.0, desc: '远程射程提升' },
-  storm: { name: '雷', emoji: '⛈️', speedMul: 0.65, desc: '雷击与减速' },
-};
-
-const COMBO_LEVELS = [
-  { threshold: 3,  text: '勢如破竹', color: '#FFFFFF', fontSize: 26 },
-  { threshold: 5,  text: '所向披靡', color: '#FFD700', fontSize: 32 },
-  { threshold: 8,  text: '萬夫莫敵', color: '#F39C12', fontSize: 38 },
-  { threshold: 12, text: '天下無雙', color: '#E74C3C', fontSize: 46 },
-];
-
-// ============================================================
-// 音效系统 — Web Audio API 程序化生成
-// ============================================================
-
-class SoundManager {
-  constructor() {
-    this.enabled = true;
-    this.ctx = null;
-  }
-
-  _ensureCtx() {
-    if (!this.ctx) {
-      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (this.ctx.state === 'suspended') this.ctx.resume();
-    return this.ctx;
-  }
-
-  toggle() {
-    this.enabled = !this.enabled;
-    return this.enabled;
-  }
-
-  _play(fn) {
-    if (!this.enabled) return;
-    try { fn(this._ensureCtx()); } catch {}
-  }
-
-  // 攻击命中
-  hit() {
-    this._play(ctx => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(300, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.06);
-      gain.gain.setValueAtTime(0.12, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(); osc.stop(ctx.currentTime + 0.08);
-    });
-  }
-
-  // 暴击
-  crit() {
-    this._play(ctx => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(600, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + 0.1);
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(); osc.stop(ctx.currentTime + 0.12);
-    });
-  }
-
-  // 击杀
-  kill() {
-    this._play(ctx => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(500, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(150, ctx.currentTime + 0.15);
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(); osc.stop(ctx.currentTime + 0.2);
-    });
-  }
-
-  // 城门受击
-  gateHit() {
-    this._play(ctx => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(120, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.2);
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(); osc.stop(ctx.currentTime + 0.25);
-
-      // 低频震动
-      const osc2 = ctx.createOscillator();
-      const gain2 = ctx.createGain();
-      osc2.type = 'sine';
-      osc2.frequency.setValueAtTime(35, ctx.currentTime);
-      gain2.gain.setValueAtTime(0.25, ctx.currentTime);
-      gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-      osc2.connect(gain2).connect(ctx.destination);
-      osc2.start(); osc2.stop(ctx.currentTime + 0.3);
-    });
-  }
-
-  // 连击音
-  combo() {
-    this._play(ctx => {
-      for (let i = 0; i < 3; i++) {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        const t = ctx.currentTime + i * 0.06;
-        osc.frequency.setValueAtTime(400 + i * 150, t);
-        gain.gain.setValueAtTime(0.08, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-        osc.connect(gain).connect(ctx.destination);
-        osc.start(t); osc.stop(t + 0.08);
-      }
-    });
-  }
-
-  // 技能 — 火攻
-  fire() {
-    this._play(ctx => {
-      const bufferSize = ctx.sampleRate * 0.8;
-      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) {
-        data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize) * 0.3;
-      }
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8);
-      source.connect(gain).connect(ctx.destination);
-      source.start();
-    });
-  }
-
-  // 技能 — 夜战
-  night() {
-    this._play(ctx => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(200, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(60, ctx.currentTime + 1.0);
-      gain.gain.setValueAtTime(0.12, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(); osc.stop(ctx.currentTime + 1.2);
-    });
-  }
-
-  // 技能 — 传令
-  messenger() {
-    this._play(ctx => {
-      [523, 659, 784].forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'triangle';
-        const t = ctx.currentTime + i * 0.12;
-        osc.frequency.setValueAtTime(freq, t);
-        gain.gain.setValueAtTime(0.1, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-        osc.connect(gain).connect(ctx.destination);
-        osc.start(t); osc.stop(t + 0.2);
-      });
-    });
-  }
-
-  // 技能 — 诏令
-  decree() {
-    this._play(ctx => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(80, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(400, ctx.currentTime + 0.3);
-      osc.frequency.exponentialRampToValueAtTime(60, ctx.currentTime + 1.0);
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-      gain.gain.setValueAtTime(0.12, ctx.currentTime + 0.3);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(); osc.stop(ctx.currentTime + 1.2);
-    });
-  }
-
-  // 天气变化
-  weather() {
-    this._play(ctx => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(250, ctx.currentTime);
-      osc.frequency.linearRampToValueAtTime(350, ctx.currentTime + 0.3);
-      gain.gain.setValueAtTime(0.06, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(); osc.stop(ctx.currentTime + 0.4);
-    });
-  }
-
-  // 宝箱拾取
-  chest() {
-    this._play(ctx => {
-      [523, 659, 784, 1047].forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        const t = ctx.currentTime + i * 0.08;
-        osc.frequency.setValueAtTime(freq, t);
-        gain.gain.setValueAtTime(0.1, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-        osc.connect(gain).connect(ctx.destination);
-        osc.start(t); osc.stop(t + 0.15);
-      });
-    });
-  }
-
-  // 胜利
-  victory() {
-    this._play(ctx => {
-      [523, 659, 784, 1047, 784, 1047].forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'triangle';
-        const t = ctx.currentTime + i * 0.15;
-        osc.frequency.setValueAtTime(freq, t);
-        gain.gain.setValueAtTime(0.12, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
-        osc.connect(gain).connect(ctx.destination);
-        osc.start(t); osc.stop(t + 0.25);
-      });
-    });
-  }
-
-  // 战败
-  defeat() {
-    this._play(ctx => {
-      [400, 350, 300, 200].forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'triangle';
-        const t = ctx.currentTime + i * 0.2;
-        osc.frequency.setValueAtTime(freq, t);
-        gain.gain.setValueAtTime(0.12, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
-        osc.connect(gain).connect(ctx.destination);
-        osc.start(t); osc.stop(t + 0.3);
-      });
-    });
-  }
-
-  // 连击升级音
-  comboUp(level) {
-    this._play(ctx => {
-      const notes = [261.63, 329.63, 392.00, 523.25];
-      const noteIdx = Math.min(Math.floor((level - 3) / 3), 3);
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.value = notes[noteIdx];
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.3);
-    });
-  }
-}
-
 // ---- DOM 元素 ----
 const canvas = document.getElementById('game-canvas');
 const ctx = canvas.getContext('2d');
@@ -422,7 +102,7 @@ class Game {
   }
 
   _startGameLoop() {
-    var self = this;
+    const self = this;
     const loop = (timestamp) => {
       if (this.state === State.BATTLE || this.state === State.NIGHT_BATTLE) {
         if (!this._lastBattleTime) this._lastBattleTime = timestamp;
@@ -441,12 +121,12 @@ class Game {
   // Dragon fire breath visual effect (independent of battle state)
   _updateDragonFire(timestamp) {
     if (!this.units) return;
-    var now = timestamp / 1000;
+    const now = timestamp / 1000;
     if (!this._lastDragonFire) this._lastDragonFire = 0;
     if (now - this._lastDragonFire < 0.5) return; // every 0.5s
     this._lastDragonFire = now;
-    for (var i = 0; i < this.units.length; i++) {
-      var u = this.units[i];
+    for (let i = 0; i < this.units.length; i++) {
+      const u = this.units[i];
       if (u.type === 'dragon' && u.hp > 0) {
         this._dragonFireBreath(u, u.x + (Math.random()-0.5)*80, u.y + 50 + Math.random()*30);
       }
@@ -1043,6 +723,119 @@ class Game {
     this.selectedUnitIdx = ownUnits[(curPos + 1) % ownUnits.length];
   }
 
+  // ============================================================
+  // 共享战斗计算方法（消除重复代码）
+  // ============================================================
+
+  // 计算单位有效移动速度（6 层叠加）
+  _getEffectiveSpeed(u, hasSpdDebuff) {
+    const def = TROOP_DEFS[u.type];
+    let spd = def.speed;
+    const isPlayer = u.side === this.playerSide;
+
+    if (isPlayer && this._messengerBuff > 0) spd *= 1.25;
+    if (!isPlayer && this._decreeBuff.enemySlow > 0) spd *= 0.6;
+    if (this._nightMode && !isPlayer) spd *= 0.7;
+    spd *= WEATHER_TYPES[this._weather.type].speedMul;
+    if (isPlayer && this._pickupBuffs.spd > 0) spd *= 1.3;
+    if (hasSpdDebuff) spd *= TROOP_DEFS.strategist.spdAura;
+    if (isPlayer && this._isInSwamp(u.x, u.y)) spd *= 0.4;
+
+    return spd;
+  }
+
+  // 计算单位有效攻击射程（天气 + 地形）
+  _getEffectiveRange(u, isGate) {
+    const def = TROOP_DEFS[u.type];
+    let range = def.range;
+    if (isGate) range += 20;
+    if (this._weather.type === 'wind' && (u.type === 'catapult' || u.type === 'spear')) {
+      range *= 1.5;
+    }
+    if (this._isOnHighGround(u.x, u.y)) range *= 1.2;
+    return range;
+  }
+
+  // 计算基础伤害（暴击/格挡前）
+  _calcDamage(u, target, hasAtkAura, isGate) {
+    const def = TROOP_DEFS[u.type];
+    let dmg = def.atk;
+    const isPlayer = u.side === this.playerSide;
+
+    if (isGate) {
+      if (u.type === 'ram') dmg *= 3;
+    } else if (target) {
+      if (u.type === 'spear' && target.type === 'cavalry') dmg *= 2;
+    }
+
+    if (isPlayer && this._pickupBuffs.atk > 0) dmg *= 1.5;
+    if (isPlayer && this._decreeBuff.atk > 0) dmg *= 1.15;
+    if (hasAtkAura) dmg *= (1 + TROOP_DEFS.strategist.atkAura);
+    if (this._isOnHighGround(u.x, u.y)) dmg *= 1.1;
+
+    return dmg;
+  }
+
+  // 计算暴击率
+  _getCritRate(u) {
+    let rate = 0.1;
+    if (u.type === 'halberd') rate = 0.15;
+    else if (u.type === 'cavalry') rate = 0.05;
+    if (this._nightMode && u.side === this.playerSide) rate += 0.15;
+    return rate;
+  }
+
+  // 执行城门攻击全流程（伤害、CD、特效、音效）
+  _doGateAttack(u, def, hasAtkAura) {
+    const gx = 860, gy = 340;
+    let dmg = this._calcDamage(u, null, hasAtkAura, true);
+    const isCrit = Math.random() < this._getCritRate(u);
+    if (isCrit) dmg *= 2;
+
+    this.gateHP = Math.max(0, this.gateHP - dmg);
+    u.atkCooldown = def.atkSpeed || 1.0;
+    u._attackFlash = 0.2;
+    this._addDamageNum(gx, gy - 35, Math.round(dmg), isCrit, isCrit ? 'crit' : 'normal');
+    this._screenShake = Math.max(this._screenShake, u.type === 'ram' ? 6 : 2);
+    this._gateFlash = 0.15;
+    this.sound.gateHit();
+    this._spawnAttackFX(u, gx, gy, isCrit, true);
+  }
+
+  // 执行一帧移动（碰撞检测、尘土粒子、飞行限位）
+  _moveToward(u, dx, dy, dist, spd, dt, spawnDust) {
+    const vx = (dx / dist) * spd * 60 * dt;
+    const vy = (dy / dist) * spd * 60 * dt;
+    const nx = u.x + vx, ny = u.y + vy;
+
+    if (u.type === 'dragon') {
+      u.x = nx;
+      u.y = Math.max(200, Math.min(300, ny));
+    } else if (!this._isBlocked(nx, ny)) {
+      u.x = nx;
+      u.y = ny;
+      if (spawnDust && Math.random() < 0.3) {
+        this.particles.push({
+          x: u.x + (Math.random() - 0.5) * 10,
+          y: u.y + 18,
+          vx: (Math.random() - 0.5) * 8,
+          vy: -5 - Math.random() * 10,
+          life: 0.3 + Math.random() * 0.3,
+          maxLife: 0.6,
+          color: 'rgba(139,119,90,0.4)',
+          size: 2 + Math.random() * 3,
+          type: 'dust',
+        });
+      }
+    } else if (u.atkCooldown <= 0) {
+      this._attackObstacle(u, TROOP_DEFS[u.type]);
+    }
+
+    if (u.type !== 'dragon') {
+      u.y = Math.max(290, Math.min(480, u.y));
+    }
+  }
+
   _findNearestEnemyFor(u) {
     let nearest = -1, nearestDist = Infinity;
     for (let i = 0; i < this.units.length; i++) {
@@ -1107,21 +900,8 @@ class Game {
         return; // 攻击时不移动
       }
 
-      let spd = def.speed;
-      if (this._messengerBuff > 0) spd *= 1.25;
-      if (this._nightMode && u.side !== this.playerSide) spd *= 0.7;
-      spd *= WEATHER_TYPES[this._weather.type].speedMul;
-      if (this._pickupBuffs.spd > 0) spd *= 1.3;
-      if (hasSpdDebuff) spd *= TROOP_DEFS.strategist.spdAura;
-      if (this._isInSwamp(u.x, u.y)) spd *= 0.4;
-      const vx = (dx / dist) * spd * 60 * dt;
-      const vy = (dy / dist) * spd * 60 * dt;
-      const nx = u.x + vx, ny = u.y + vy;
-      var isFlying = u.type === 'dragon';
-      if (isFlying) { u.x = nx; u.y = Math.max(200, Math.min(300, ny)); }
-      else if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny; }
-      else if (u.atkCooldown <= 0) { this._attackObstacle(u, def); }
-      if (!isFlying) u.y = Math.max(290, Math.min(480, u.y));
+      const spd = this._getEffectiveSpeed(u, hasSpdDebuff);
+      this._moveToward(u, dx, dy, dist, spd, dt, false);
       return;
     }
 
@@ -1132,9 +912,7 @@ class Game {
       const dx = t.x - u.x, dy = t.y - u.y;
       const dist = Math.sqrt(dx*dx + dy*dy);
 
-      let atkRange = def.range;
-      if (this._weather.type === 'wind' && (u.type === 'catapult' || u.type === 'spear')) atkRange *= 1.5;
-      if (this._isOnHighGround(u.x, u.y)) atkRange *= 1.2;
+      const atkRange = this._getEffectiveRange(u, false);
 
       if (dist <= atkRange) {
         if (u.atkCooldown <= 0) {
@@ -1142,21 +920,8 @@ class Game {
           if (t.hp <= 0) { u.cmdType = null; u.cmdTarget = null; }
         }
       } else {
-        let spd = def.speed;
-        if (this._messengerBuff > 0) spd *= 1.25;
-        if (this._nightMode) spd *= 0.7;
-        spd *= WEATHER_TYPES[this._weather.type].speedMul;
-        if (this._pickupBuffs.spd > 0) spd *= 1.3;
-        if (hasSpdDebuff) spd *= TROOP_DEFS.strategist.spdAura;
-        if (this._isInSwamp(u.x, u.y)) spd *= 0.4;
-        const vx = (dx / dist) * spd * 60 * dt;
-        const vy = (dy / dist) * spd * 60 * dt;
-        const nx = u.x + vx, ny = u.y + vy;
-        var isFlying2 = u.type === 'dragon';
-        if (isFlying2) { u.x = nx; u.y = Math.max(200, Math.min(300, ny)); }
-        else if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny; }
-        else if (u.atkCooldown <= 0) { this._attackObstacle(u, def); }
-        if (!isFlying2) u.y = Math.max(290, Math.min(480, u.y));
+        const spd = this._getEffectiveSpeed(u, hasSpdDebuff);
+        this._moveToward(u, dx, dy, dist, spd, dt, false);
       }
       return;
     }
@@ -1167,47 +932,15 @@ class Game {
       const dx = gx - u.x, dy = gy - u.y;
       const dist = Math.sqrt(dx*dx + dy*dy);
 
-      let atkRange = def.range + 20;
-      if (this._weather.type === 'wind' && (u.type === 'catapult' || u.type === 'spear')) atkRange *= 1.5;
-      if (this._isOnHighGround(u.x, u.y)) atkRange *= 1.2;
+      const atkRange = this._getEffectiveRange(u, true);
 
       if (dist <= atkRange) {
         if (u.atkCooldown <= 0) {
-          let dmg = def.atk;
-          if (u.type === 'ram') dmg *= 3;
-          if (this._pickupBuffs.atk > 0) dmg *= 1.5;
-          if (this._decreeBuff.atk > 0) dmg *= 1.15;
-          if (hasAtkAura) dmg *= (1 + TROOP_DEFS.strategist.atkAura);
-          if (this._isOnHighGround(u.x, u.y)) dmg *= 1.1;
-          let critRate = u.type === 'halberd' ? 0.15 : u.type === 'cavalry' ? 0.05 : 0.1;
-          if (this._nightMode) critRate += 0.15;
-          const isCrit = Math.random() < critRate;
-          if (isCrit) dmg *= 2;
-          this.gateHP = Math.max(0, this.gateHP - dmg);
-          u.atkCooldown = def.atkSpeed || 1.0;
-          u._attackFlash = 0.2;
-          { const gateType = isCrit ? 'crit' : 'normal'; this._addDamageNum(gx, gy - 35, Math.round(dmg), isCrit, gateType); }
-          this._screenShake = Math.max(this._screenShake, u.type === 'ram' ? 6 : 2);
-          this._gateFlash = 0.15;
-          this.sound.gateHit();
-          this._spawnAttackFX(u, gx, gy, isCrit, true);
+          this._doGateAttack(u, def, hasAtkAura);
         }
       } else {
-        let spd = def.speed;
-        if (this._messengerBuff > 0) spd *= 1.25;
-        if (this._nightMode) spd *= 0.7;
-        spd *= WEATHER_TYPES[this._weather.type].speedMul;
-        if (this._pickupBuffs.spd > 0) spd *= 1.3;
-        if (hasSpdDebuff) spd *= TROOP_DEFS.strategist.spdAura;
-        if (this._isInSwamp(u.x, u.y)) spd *= 0.4;
-        const vx = (dx / dist) * spd * 60 * dt;
-        const vy = (dy / dist) * spd * 60 * dt;
-        const nx = u.x + vx, ny = u.y + vy;
-        var isFlying2 = u.type === 'dragon';
-        if (isFlying2) { u.x = nx; u.y = Math.max(200, Math.min(300, ny)); }
-        else if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny; }
-        else if (u.atkCooldown <= 0) { this._attackObstacle(u, def); }
-        if (!isFlying2) u.y = Math.max(290, Math.min(480, u.y));
+        const spd = this._getEffectiveSpeed(u, hasSpdDebuff);
+        this._moveToward(u, dx, dy, dist, spd, dt, false);
       }
       return;
     }
@@ -1219,16 +952,8 @@ class Game {
     if (u.type === 'dragon' && !isGate) {
       this._dragonFireBreath(u, target.x, target.y);
     }
-    let dmg = def.atk;
-    if (u.type === 'spear' && target.type === 'cavalry') dmg *= 2;
-    if (this._pickupBuffs.atk > 0 && u.side === this.playerSide) dmg *= 1.5;
-    if (this._decreeBuff.atk > 0 && u.side === this.playerSide) dmg *= 1.15;
-    if (hasAtkAura) dmg *= (1 + TROOP_DEFS.strategist.atkAura);
-    if (this._isOnHighGround(u.x, u.y)) dmg *= 1.1;
-
-    let critRate = u.type === 'halberd' ? 0.15 : u.type === 'cavalry' ? 0.05 : 0.1;
-    if (this._nightMode && u.side === this.playerSide) critRate += 0.15;
-    const isCrit = Math.random() < critRate;
+    let dmg = this._calcDamage(u, target, hasAtkAura, false);
+    const isCrit = Math.random() < this._getCritRate(u);
     if (isCrit) dmg *= 2;
 
     let blocked = false;
@@ -1267,15 +992,15 @@ class Game {
 
   // 巨龙吐火 — spawn flame particle stream toward target
   _dragonFireBreath(u, tx, ty) {
-    var dx = tx - u.x;
-    var dy = ty - u.y;
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    var steps = Math.floor(dist / 10);
-    var sheet = Assets.get('fire_breath');
-    for (var i = 0; i < steps; i++) {
-      var t = i / steps;
-      var px = u.x + dx * t + (Math.random() - 0.5) * 30;
-      var py = u.y + dy * t + (Math.random() - 0.5) * 15;
+    const dx = tx - u.x;
+    const dy = ty - u.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const steps = Math.floor(dist / 10);
+    const sheet = Assets.get('fire_breath');
+    for (let i = 0; i < steps; i++) {
+      const t = i / steps;
+      const px = u.x + dx * t + (Math.random() - 0.5) * 30;
+      const py = u.y + dy * t + (Math.random() - 0.5) * 15;
       this.particles.push({
         x: px, y: py,
         vx: (Math.random() - 0.5) * 20,
@@ -1289,7 +1014,7 @@ class Game {
       });
     }
     // Impact fire burst
-    for (var j = 0; j < 8; j++) {
+    for (let j = 0; j < 8; j++) {
       this.particles.push({
         x: tx, y: ty,
         vx: (Math.random() - 0.5) * 80,
@@ -1499,25 +1224,24 @@ class Game {
 
   _spawnAIUnits() {
     const playerCount = this.units.filter(u => u.side === this.playerSide).length;
-    var aiIsDragon = false;
-    var zone = this.aiSide === 'han'
+    const zone = this.aiSide === 'han'
       ? { xMin: 80, xMax: 460, yMin: 300, yMax: 470 }
       : { xMin: 520, xMax: 800, yMin: 300, yMax: 470 };
 
-    var plan = this._generateAIPlan(playerCount);
+    const plan = this._generateAIPlan(playerCount);
 
-    var pts2 = DEPLOY_POINTS;
-    for (var ti2 = 0; ti2 < plan.length; ti2++) {
-      var type2 = plan[ti2];
-      var def2 = TROOP_DEFS[type2];
+    let pts2 = DEPLOY_POINTS;
+    for (let ti2 = 0; ti2 < plan.length; ti2++) {
+      const type2 = plan[ti2];
+      const def2 = TROOP_DEFS[type2];
       if (pts2 < def2.cost) continue;
-      var isDragonAI = type2 === 'dragon';
-      for (var attempt2 = 0; attempt2 < 50; attempt2++) {
-        var x2 = zone.xMin + Math.random() * (zone.xMax - zone.xMin);
-        var y2 = isDragonAI ? 200 + Math.random() * 60 : zone.yMin + Math.random() * (zone.yMax - zone.yMin);
-        var tooClose2 = this.units.some(function(u2) {
-          var dx2 = u2.x - x2;
-          var dy2 = u2.y - y2;
+      const isDragonAI = type2 === 'dragon';
+      for (let attempt2 = 0; attempt2 < 50; attempt2++) {
+        const x2 = zone.xMin + Math.random() * (zone.xMax - zone.xMin);
+        const y2 = isDragonAI ? 200 + Math.random() * 60 : zone.yMin + Math.random() * (zone.yMax - zone.yMin);
+        const tooClose2 = this.units.some(function(u2) {
+          const dx2 = u2.x - x2;
+          const dy2 = u2.y - y2;
           return Math.sqrt(dx2*dx2 + dy2*dy2) < 45;
         });
         if (!tooClose2) {
@@ -1736,11 +1460,11 @@ class Game {
 
   // ---- 成就渲染 ----
   _renderAchievements() {
-    var names = ['初出茅庐','连击大师','闪电战','铜墙铁壁','火力全开','弹无虚发','诏令之主','全成就'];
-    var keys  = ['first_win','combo_8','speed_120','gate_80','all_skills','catapult_5','decree_win','all_done'];
-    var html = '';
-    for (var i = 0; i < names.length; i++) {
-      var unlocked = this.unlockedAchievements[keys[i]];
+    const names = ['初出茅庐','连击大师','闪电战','铜墙铁壁','火力全开','弹无虚发','诏令之主','全成就'];
+    const keys  = ['first_win','combo_8','speed_120','gate_80','all_skills','catapult_5','decree_win','all_done'];
+    let html = '';
+    for (let i = 0; i < names.length; i++) {
+      const unlocked = this.unlockedAchievements[keys[i]];
       html += '<span class="ach-tag' + (unlocked ? ' ach-done' : '') + '">' + (unlocked ? '✓' : '○') + ' ' + names[i] + '</span>';
     }
     achievementsRow.innerHTML = html;
@@ -3535,18 +3259,18 @@ class Game {
           break;
         }
         case 'fire_breath': {
-          var fsheet = Assets.get('fire_breath');
+          const fsheet = Assets.get('fire_breath');
           if (fsheet) {
             // fire1.png is 1112x1188 spritesheet — use a section as flame frame
-            var frameW = 120, frameH = 120;
-            var fIdx = p.data ? (p.data.frameIdx || 0) : 0;
-            var col = fIdx % 9;
-            var row = Math.floor(fIdx / 9);
+            const frameW = 120, frameH = 120;
+            const fIdx = p.data ? (p.data.frameIdx || 0) : 0;
+            const col = fIdx % 9;
+            const row = Math.floor(fIdx / 9);
             ctx.drawImage(fsheet, col * frameW, row * frameH, frameW, frameH,
                           p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
           } else {
             // Fallback: simple radial flame
-            var fgrad = ctx.createRadialGradient(p.x, p.y, p.size * 0.1, p.x, p.y, p.size);
+            const fgrad = ctx.createRadialGradient(p.x, p.y, p.size * 0.1, p.x, p.y, p.size);
             fgrad.addColorStop(0, 'rgba(255,255,50,0.9)');
             fgrad.addColorStop(0.5, 'rgba(255,100,0,0.6)');
             fgrad.addColorStop(1, 'rgba(255,20,0,0)');
@@ -3720,8 +3444,8 @@ class Game {
 
   _updateBattle(dt) {
     // ---- 巨龙始终飞行在空中，并周期性吐火 ----
-    for (var i = 0; i < this.units.length; i++) {
-      var u = this.units[i];
+    for (let i = 0; i < this.units.length; i++) {
+      const u = this.units[i];
       if (u.type === 'dragon' && u.hp > 0) {
         u.y = Math.max(200, Math.min(260, u.y));
         // Periodic fire breath bursts
@@ -3920,6 +3644,20 @@ class Game {
     // 按 x 排序：攻方从左到右、守方从右到左，前方单位优先
     alive.sort((a, b) => a.side === 'han' ? b.x - a.x : a.x - b.x);
 
+    // 预提取 strategist 列表，避免 O(n²) 扫描
+    const auraRangeSq = TROOP_DEFS.strategist.auraRange * TROOP_DEFS.strategist.auraRange;
+    const playerStrategists = [];
+    const enemyStrategists = [];
+    for (const st of alive) {
+      if (st.type !== 'strategist') continue;
+      if (st.side === this.playerSide) playerStrategists.push(st);
+      else enemyStrategists.push(st);
+    }
+
+    // 预拆分阵营，AI 寻敌只需扫描敌对阵营
+    const playerAlive = alive.filter(u => u.side === this.playerSide);
+    const enemyAlive = alive.filter(u => u.side !== this.playerSide);
+
     for (const u of alive) {
       u.atkCooldown = Math.max(0, u.atkCooldown - dt);
       if (u._hitFlash > 0) u._hitFlash -= dt;
@@ -3929,16 +3667,18 @@ class Game {
       const def = TROOP_DEFS[u.type];
       const isAttacker = u.side === 'han';
 
-      // 军师光环
+      // 军师光环（O(1) 预过滤，平方距离避免 sqrt）
       let hasAtkAura = false, hasSpdDebuff = false;
       if (u.type !== 'strategist') {
-        for (const st of alive) {
-          if (st.type !== 'strategist' || st === u) continue;
+        const friendlyStrats = (u.side === this.playerSide) ? playerStrategists : enemyStrategists;
+        const hostileStrats  = (u.side === this.playerSide) ? enemyStrategists : playerStrategists;
+        for (const st of friendlyStrats) {
           const adx = u.x - st.x, ady = u.y - st.y;
-          if (Math.sqrt(adx*adx + ady*ady) < TROOP_DEFS.strategist.auraRange) {
-            if (st.side === u.side) hasAtkAura = true;
-            else hasSpdDebuff = true;
-          }
+          if (adx * adx + ady * ady < auraRangeSq) { hasAtkAura = true; break; }
+        }
+        for (const st of hostileStrats) {
+          const adx = u.x - st.x, ady = u.y - st.y;
+          if (adx * adx + ady * ady < auraRangeSq) { hasSpdDebuff = true; break; }
         }
       }
 
@@ -3960,14 +3700,15 @@ class Game {
         }
       }
 
-      // 寻找最近的敌人
+      // 寻找最近的敌人（只扫描敌对阵营，O(n/2)）
       if (!targetGate) {
         let nearestDist = Infinity;
-        for (const enemy of alive) {
-          if (enemy.side === u.side) continue;
+        const hostiles = (u.side === this.playerSide) ? enemyAlive : playerAlive;
+        // 使用平方距离避免重复 sqrt
+        for (const enemy of hostiles) {
           const dx = enemy.x - u.x;
           const dy = enemy.y - u.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
+          const dist = dx * dx + dy * dy;
           if (dist < nearestDist) {
             nearestDist = dist;
             target = enemy;
@@ -3984,61 +3725,15 @@ class Game {
         const gx = 860, gy = 340;
         const dx = gx - u.x, dy = gy - u.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
+        const atkRange = this._getEffectiveRange(u, true);
 
-        let atkRange = def.range + 20;
-        if (this._weather.type === 'wind' && (u.type === 'catapult' || u.type === 'spear')) atkRange *= 1.5;
-        if (this._isOnHighGround(u.x, u.y)) atkRange *= 1.2;
         if (dist <= atkRange) {
           if (u.atkCooldown <= 0) {
-            let dmg = def.atk;
-            if (u.type === 'ram') dmg *= 3;
-            if (this._pickupBuffs.atk > 0 && u.side === this.playerSide) dmg *= 1.5;
-            if (this._decreeBuff.atk > 0 && u.side === this.playerSide) dmg *= 1.15;
-            if (hasAtkAura) dmg *= (1 + TROOP_DEFS.strategist.atkAura);
-            if (this._isOnHighGround(u.x, u.y)) dmg *= 1.1;
-
-            let critRate = u.type === 'halberd' ? 0.15 : u.type === 'cavalry' ? 0.05 : 0.1;
-            if (this._nightMode && u.side === this.playerSide) critRate += 0.15;
-            const isCrit = Math.random() < critRate;
-            if (isCrit) dmg *= 2;
-
-            this.gateHP = Math.max(0, this.gateHP - dmg);
-            u.atkCooldown = def.atkSpeed || 1.0;
-            u._attackFlash = 0.2;
-            { const gateType2 = isCrit ? 'crit' : 'normal'; this._addDamageNum(gx, gy - 35, Math.round(dmg), isCrit, gateType2); }
-            this._screenShake = Math.max(this._screenShake, u.type === 'ram' ? 6 : 2);
-            this._gateFlash = 0.15;
-            this.sound.gateHit();
-            this._spawnAttackFX(u, gx, gy, isCrit, true);
+            this._doGateAttack(u, def, hasAtkAura);
           }
         } else {
-          let spd = def.speed;
-          if (this._decreeBuff.enemySlow > 0) spd *= 0.6;
-          if (this._nightMode && u.side !== this.playerSide) spd *= 0.7;
-          spd *= WEATHER_TYPES[this._weather.type].speedMul;
-          if (this._pickupBuffs.spd > 0 && u.side === this.playerSide) spd *= 1.3;
-          if (hasSpdDebuff) spd *= TROOP_DEFS.strategist.spdAura;
-          const vx = (dx / dist) * spd * 60 * dt;
-          const vy = (dy / dist) * spd * 60 * dt;
-          const nx = u.x + vx, ny = u.y + vy;
-          if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny;
-            // 行军尘土
-            if (def.speed > 0.5 && Math.random() < 0.3) {
-              this.particles.push({
-                x: u.x + (Math.random() - 0.5) * 10,
-                y: u.y + 18,
-                vx: (Math.random() - 0.5) * 8,
-                vy: -5 - Math.random() * 10,
-                life: 0.3 + Math.random() * 0.3,
-                maxLife: 0.6,
-                color: 'rgba(139,119,90,0.4)',
-                size: 2 + Math.random() * 3,
-                type: 'dust',
-              });
-            }
-          }
-          else if (u.atkCooldown <= 0) { this._attackObstacle(u, def); }
-          u.y = Math.max(290, Math.min(480, u.y));
+          const spd = this._getEffectiveSpeed(u, hasSpdDebuff);
+          this._moveToward(u, dx, dy, dist, spd, dt, true);
         }
         continue;
       }
@@ -4047,78 +3742,15 @@ class Game {
       if (target) {
         const dx = target.x - u.x, dy = target.y - u.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
+        const atkRange = this._getEffectiveRange(u, false);
 
-        let atkRange = def.range;
-        if (this._weather.type === 'wind' && (u.type === 'catapult' || u.type === 'spear')) atkRange *= 1.5;
-        if (this._isOnHighGround(u.x, u.y)) atkRange *= 1.2;
         if (dist <= atkRange) {
           if (u.atkCooldown <= 0) {
-            let dmg = def.atk;
-            // 矛兵对骑兵双倍
-            if (u.type === 'spear' && target.type === 'cavalry') dmg *= 2;
-            if (this._pickupBuffs.atk > 0 && u.side === this.playerSide) dmg *= 1.5;
-            if (this._decreeBuff.atk > 0 && u.side === this.playerSide) dmg *= 1.15;
-            if (hasAtkAura) dmg *= (1 + TROOP_DEFS.strategist.atkAura);
-            if (this._isOnHighGround(u.x, u.y)) dmg *= 1.1;
-
-            let critRate = u.type === 'halberd' ? 0.15 : u.type === 'cavalry' ? 0.05 : 0.1;
-            if (this._nightMode && u.side === this.playerSide) critRate += 0.15;
-            const isCrit = Math.random() < critRate;
-            if (isCrit) dmg *= 2;
-
-            // 盾兵格挡
-            let blocked = false;
-            if (target.type === 'shield' && Math.random() < TROOP_DEFS.shield.blockChance) {
-              dmg *= (1 - TROOP_DEFS.shield.blockPct);
-              blocked = true;
-            }
-            target.hp -= dmg;
-            target._lostSegFlash = 0.3;
-            u.atkCooldown = def.atkSpeed || 1.0;
-            u._attackFlash = 0.2;
-            { const atkType2 = isCrit ? 'crit' : 'normal'; this._addDamageNum(target.x, target.y - 28, Math.round(dmg), isCrit, atkType2); }
-            if (blocked) {
-              this._addDamageNum(target.x, target.y - 40, Math.round(dmg), false, 'block');
-            }
-            if (isCrit) this.sound.crit(); else this.sound.hit();
-
-            target._hitFlash = 0.12;
-            this._spawnAttackFX(u, target.x, target.y, isCrit, false);
-
-            if (target.hp <= 0) {
-              target.hp = 0;
-              target._deathTime = this.battleElapsed;
-              this._onKill(target, u.type);
-            }
+            this._doAttack(u, def, target, hasAtkAura, false);
           }
         } else {
-          let spd = def.speed;
-          if (this._decreeBuff.enemySlow > 0) spd *= 0.6;
-          if (this._nightMode && u.side !== this.playerSide) spd *= 0.7;
-          spd *= WEATHER_TYPES[this._weather.type].speedMul;
-          if (this._pickupBuffs.spd > 0 && u.side === this.playerSide) spd *= 1.3;
-          if (hasSpdDebuff) spd *= TROOP_DEFS.strategist.spdAura;
-          const vx = (dx / dist) * spd * 60 * dt;
-          const vy = (dy / dist) * spd * 60 * dt;
-          const nx = u.x + vx, ny = u.y + vy;
-          if (!this._isBlocked(nx, ny)) { u.x = nx; u.y = ny;
-            // 行军尘土
-            if (def.speed > 0.5 && Math.random() < 0.3) {
-              this.particles.push({
-                x: u.x + (Math.random() - 0.5) * 10,
-                y: u.y + 18,
-                vx: (Math.random() - 0.5) * 8,
-                vy: -5 - Math.random() * 10,
-                life: 0.3 + Math.random() * 0.3,
-                maxLife: 0.6,
-                color: 'rgba(139,119,90,0.4)',
-                size: 2 + Math.random() * 3,
-                type: 'dust',
-              });
-            }
-          }
-          else if (u.atkCooldown <= 0) { this._attackObstacle(u, def); }
-          u.y = Math.max(290, Math.min(480, u.y));
+          const spd = this._getEffectiveSpeed(u, hasSpdDebuff);
+          this._moveToward(u, dx, dy, dist, spd, dt, true);
         }
       }
     }
