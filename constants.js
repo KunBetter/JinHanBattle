@@ -6,6 +6,7 @@ const CANVAS_W = 1100;
 const CANVAS_H = 550;
 const DEPLOY_POINTS = 60;
 const GATE_MAX_HP = 500;
+const MAX_PARTICLES = 1400;
 
 // ---- 游戏状态枚举 ----
 const State = Object.freeze({
@@ -13,9 +14,15 @@ const State = Object.freeze({
   SIDE_SELECT: 'SIDE_SELECT',
   DEPLOYMENT: 'DEPLOYMENT',
   BATTLE: 'BATTLE',
-  NIGHT_BATTLE: 'NIGHT_BATTLE',
   VICTORY: 'VICTORY',
 });
+
+// ---- 难度定义 ----
+const DIFF_DEFS = {
+  easy:   { name: '简单', budget: 45, hpMul: 0.85, atkMul: 0.9 },
+  normal: { name: '标准', budget: 60, hpMul: 1.0,  atkMul: 1.0 },
+  hard:   { name: '困难', budget: 75, hpMul: 1.15, atkMul: 1.2 },
+};
 
 // ---- 兵种定义 ----
 const TROOP_DEFS = {
