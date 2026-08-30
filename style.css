@@ -1127,6 +1127,351 @@ body {
 }
 
 /* ==============================================
+   儿童友好新增：BGM音量 / 战斗控制 / 新手引导 / 庆祝
+   ============================================== */
+
+/* BGM 音量滑杆 */
+#music-vol {
+  width: 64px;
+  height: 4px;
+  accent-color: var(--gold);
+  cursor: pointer;
+  opacity: 0.75;
+}
+#music-vol:hover { opacity: 1; }
+
+/* 战斗控制按钮组（加速/暂停/退出/全军出击） */
+#battle-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+#battle-actions.hidden { display: none; }
+
+.battle-btn {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border-panel);
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 7px;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.battle-btn:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: var(--gold-dark);
+  color: var(--gold-light);
+}
+.battle-btn.active {
+  color: var(--gold-light);
+  border-color: rgba(212,168,75,0.6);
+  background: rgba(212,168,75,0.12);
+}
+.battle-btn.confirm {
+  color: #fff;
+  border-color: var(--han);
+  background: var(--han);
+  animation: pulse-glow 0.6s ease-in-out infinite;
+}
+
+/* 新手引导框 */
+#tutorial-box {
+  position: absolute;
+  top: 54px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toast);
+  background: rgba(6,6,18,0.94);
+  border: 2px solid var(--gold);
+  border-radius: var(--radius-lg);
+  padding: 12px 26px;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 0 30px rgba(212,168,75,0.35);
+  animation: tutPulse 1.6s ease-in-out infinite;
+  max-width: 740px;
+}
+#tutorial-box.hidden { display: none; }
+#tutorial-box .tut-main {
+  display: block;
+  color: var(--gold-light);
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Serif SC", serif;
+}
+#tutorial-box .tut-sub {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+@keyframes tutPulse {
+  0%, 100% { box-shadow: 0 0 18px rgba(212,168,75,0.25); }
+  50%      { box-shadow: 0 0 42px rgba(212,168,75,0.55); }
+}
+
+/* 技能就绪金色呼吸 */
+.skill-token.ready:not(:disabled) {
+  border-color: var(--gold);
+  animation: skillReady 1.4s ease-in-out infinite;
+}
+@keyframes skillReady {
+  0%, 100% { box-shadow: 0 0 6px rgba(212,168,75,0.35); transform: translateY(0); }
+  50%      { box-shadow: 0 0 24px rgba(212,168,75,0.75); transform: translateY(-3px); }
+}
+
+/* 巨龙令牌（稀有金色） */
+.troop-token.ultimate-token {
+  border-color: rgba(212,168,75,0.55);
+  background: linear-gradient(180deg, #2A2010, #1A0E02);
+  min-width: 56px;
+}
+.troop-token.ultimate-token .token-icon { font-size: 24px; }
+.troop-token.ultimate-token .token-name { color: var(--gold-light); font-weight: 700; }
+.troop-token.ultimate-token:hover,
+.troop-token.ultimate-token.selected {
+  box-shadow: 0 0 22px rgba(212,168,75,0.5);
+}
+
+/* 失败建议（军师献策） */
+.defeat-advice {
+  margin: 12px auto 4px;
+  max-width: 470px;
+  color: var(--gold-light);
+  font-size: 14px;
+  line-height: 1.6;
+  background: rgba(212,168,75,0.08);
+  border: 1px dashed rgba(212,168,75,0.4);
+  border-radius: var(--radius-md);
+  padding: 8px 14px;
+}
+
+/* 战报按钮组（再战 + 主菜单） */
+.victory-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 18px;
+}
+.victory-actions .aux-btn {
+  min-height: 46px;
+  padding: 8px 18px;
+}
+
+/* ==============================================
+   第三/四批新增：战功殿 / 触屏菜单 / 兵种提示 / 战役横幅
+   ============================================== */
+
+/* 主菜单元进度行 */
+#meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.meta-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--gold-light);
+  border: 1px solid rgba(212,168,75,0.4);
+  background: rgba(212,168,75,0.08);
+  padding: 4px 12px;
+  border-radius: 20px;
+  letter-spacing: 0.1em;
+}
+.meta-gold {
+  font-size: 14px;
+  color: var(--gold);
+  font-weight: 700;
+}
+#meta-row .aux-btn { min-height: 34px; padding: 4px 14px; }
+
+/* 战功殿 */
+.shop-content { max-width: 620px; width: 92%; max-height: 86vh; overflow-y: auto; }
+.shop-gold-row {
+  text-align: center;
+  font-size: 16px;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.shop-gold-num {
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--gold-light);
+}
+.shop-sec-title {
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin: 14px 0 8px;
+  letter-spacing: 0.15em;
+  border-bottom: 1px solid var(--border-panel);
+  padding-bottom: 6px;
+}
+.shop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.shop-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-panel);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+}
+.shop-row .sr-icon { font-size: 22px; width: 30px; text-align: center; }
+.shop-row .sr-name { font-size: 14px; font-weight: 700; color: var(--text); width: 84px; }
+.shop-row .sr-stars { font-size: 12px; color: var(--gold); letter-spacing: 2px; flex: 1; }
+.shop-row .sr-desc { font-size: 11px; color: var(--text-muted); flex: 1; }
+.shop-row .sr-btn {
+  border: 1px solid var(--gold-dark);
+  background: rgba(212,168,75,0.12);
+  color: var(--gold-light);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 66px;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.shop-row .sr-btn:hover:not(:disabled) {
+  background: rgba(212,168,75,0.25);
+  box-shadow: 0 0 12px var(--gold-glow);
+}
+.shop-row .sr-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.shop-row.skin-row .sr-icon { font-size: 18px; }
+.shop-stats {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 6px 0 12px;
+}
+.shop-stats b { color: var(--gold-light); }
+#btn-shop-close { margin-top: 14px; }
+
+/* 触屏指令菜单 */
+#touch-menu {
+  position: absolute;
+  z-index: var(--z-toast);
+  background: rgba(10,10,24,0.96);
+  border: 1px solid var(--gold-dark);
+  border-radius: var(--radius-md);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 120px;
+  box-shadow: var(--shadow-lg), 0 0 20px rgba(212,168,75,0.2);
+}
+#touch-menu.hidden { display: none; }
+#touch-menu .tm-title {
+  font-size: 11px;
+  color: var(--gold-light);
+  text-align: center;
+  padding: 2px 8px 4px;
+  border-bottom: 1px solid var(--border-panel);
+}
+#touch-menu .tm-item {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+#touch-menu .tm-item:hover { background: rgba(212,168,75,0.12); color: var(--gold-light); }
+
+/* 兵种说明提示 */
+#troop-tip {
+  position: absolute;
+  z-index: var(--z-toast);
+  background: rgba(10,10,24,0.96);
+  border: 1px solid var(--gold-dark);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text);
+  pointer-events: none;
+  box-shadow: var(--shadow-lg);
+  max-width: 220px;
+  line-height: 1.6;
+}
+#troop-tip.hidden { display: none; }
+#troop-tip .tt-name { color: var(--gold-light); font-weight: 700; font-size: 13px; }
+#troop-tip .tt-desc { color: var(--text-muted); margin-top: 2px; }
+#troop-tip .tt-stats { color: var(--text); margin-top: 4px; }
+
+/* 战役剧情横幅 */
+#campaign-banner {
+  position: absolute;
+  top: 46px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toast);
+  background: linear-gradient(180deg, rgba(42,26,5,0.96), rgba(26,20,8,0.96));
+  border: 2px solid var(--gold);
+  border-radius: var(--radius-lg);
+  padding: 14px 34px;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 0 40px rgba(212,168,75,0.45);
+  animation: tutPulse 1.4s ease-in-out infinite;
+  max-width: 700px;
+}
+#campaign-banner.hidden { display: none; }
+#campaign-banner .cb-level {
+  display: block;
+  color: var(--gold-light);
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Serif SC", serif;
+}
+#campaign-banner .cb-intro {
+  display: block;
+  color: var(--text);
+  font-size: 15px;
+  margin-top: 4px;
+  letter-spacing: 0.05em;
+}
+
+/* 锁定令牌（未解锁新兵种） */
+.troop-token.locked {
+  opacity: 0.55;
+  filter: grayscale(0.8);
+  border-color: rgba(255,255,255,0.06);
+}
+.troop-token.locked:hover {
+  transform: translateY(-2px);
+  border-color: rgba(212,168,75,0.4);
+  box-shadow: 0 0 12px rgba(212,168,75,0.15);
+}
+.troop-token .token-lock {
+  display: none;
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 11px;
+}
+.troop-token.locked .token-lock { display: block; }
+
+/* ==============================================
    Reduced Motion
    ============================================== */
 @media (prefers-reduced-motion: reduce) {

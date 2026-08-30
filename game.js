@@ -126,6 +126,66 @@ class Game {
     this.mouseY = 0;
     this.hoveredUnitIdx = -1;
 
+    // 战斗节奏控制（儿童友好：加速/暂停/退出）
+    this._speedMul = 1;      // 1x / 2x
+    this._paused = false;
+    this._quitArmed = false; // 退出按钮二次确认
+    this._autoAdvance = true; // 全军出击（默认开，士兵自动冲锋）
+
+    // 胜利/失败庆祝（慢动作 + 烟花）
+    this._celebration = null; // { t, dur }
+    this._result = null;      // 'win' | 'lose'
+    this._gateBoom = false;
+
+    // 新手引导
+    let tutDone = false;
+    try { tutDone = !!localStorage.getItem('hanjin_tut_done'); } catch {}
+    this._tutorial = { active: false, step: -1, done: tutDone };
+    this._tutTimer = null;
+    this.tutorialBox = $('tutorial-box');
+
+    // 元进度（战功殿）：累计金币 / 兵种精锐 / 皮肤 / 称号
+    this._meta = this._loadMeta();
+    this._skinColors = SKIN_DEFS[this._meta.skin] || SKIN_DEFS.default;
+
+    // 战役模式
+    this.campaign = { active: false, level: 0, points: CAMPAIGN_DEFS[0].points };
+
+    // 随机中立事件（商人 / 山崩 / 狼群）
+    this._events = { merchant: null, wolves: [] };
+    this._eventTimer = 0;
+    this._eventDelay = 18;
+    this._lightningStrike = null; // { x, y, warn }
+
+    // 触屏状态
+    this._touch = { lastTap: null, longPressTimer: null, longPressActive: false, touchMoved: false, startX: 0, startY: 0, drag: null };
+
+    // 预渲染特效精灵（避免每帧 createRadialGradient 的 GC/CPU 开销）
+    this._fx = {
+      shadow: this._makeFX('shadow'),
+      fire: this._makeFX('fire'),
+      star: this._makeFX('star'),
+      impact: this._makeFX('impact'),
+    };
+
+    // 音乐音量滑杆
+    const volSlider = $('music-vol');
+    if (volSlider) {
+      volSlider.addEventListener('input', () => {
+        this.sound.setMusicVolume(volSlider.value / 100);
+      });
+    }
+
+    // 全局按钮点击音（capture 阶段捕获，禁用按钮不会触发）
+    document.addEventListener('click', (e) => {
+      if (e.target && e.target.closest && e.target.closest('button')) {
+        this.sound.click();
+      }
+    }, true);
+
+    // 兵种令牌 hover 说明
+    this._bindTroopTip();
+
     this._bindEvents();
     this._showOverlay('start');
     this._startGameLoop();
@@ -136,33 +196,18 @@ class Game {
     const loop = (timestamp) => {
       if (this.state === State.BATTLE) {
         if (!this._lastBattleTime) this._lastBattleTime = timestamp;
-        const dt = Math.min((timestamp - this._lastBattleTime) / 1000, 0.05);
+        const rawDt = Math.min((timestamp - this._lastBattleTime) / 1000, 0.05);
         this._lastBattleTime = timestamp;
-        this._updateBattle(dt);
+        if (!this._paused) {
+          let dt = rawDt * this._speedMul;
+          if (this._celebration) dt = rawDt * 0.3; // 胜利/失败慢动作
+          this._updateBattle(dt);
+        }
       }
-      // Dragon fire breath visual — runs in ALL states
-      this._updateDragonFire(timestamp);
       this._render();
       this._loopId = requestAnimationFrame(loop);
     };
     this._loopId = requestAnimationFrame(loop);
-  }
-
-  // Dragon fire breath visual effect (independent of battle state)
-  _updateDragonFire(timestamp) {
-    if (!this.units) return;
-    // 战斗状态下由 _updateBattle 每 2 秒触发吐火，避免双重触发产生粒子风暴
-    if (this.state === State.BATTLE) return;
-    const now = timestamp / 1000;
-    if (!this._lastDragonFire) this._lastDragonFire = 0;
-    if (now - this._lastDragonFire < 0.5) return; // every 0.5s
-    this._lastDragonFire = now;
-    for (let i = 0; i < this.units.length; i++) {
-      const u = this.units[i];
-      if (u.type === 'dragon' && u.hp > 0) {
-        this._dragonFireBreath(u, u.x + (Math.random()-0.5)*80, u.y + 50 + Math.random()*30);
-      }
-    }
   }
 
   // ---- 存档（localStorage） ----
@@ -185,6 +230,190 @@ class Game {
     this._showToast('解锁成就！');
   }
 
+  // ---- 元进度（战功殿） ----
+  _loadMeta() {
+    try {
+      const m = JSON.parse(localStorage.getItem('hanjin_meta')) || {};
+      return {
+        gold: m.gold || 0,
+        upgrades: m.upgrades || {},
+        unlocks: m.unlocks || {},
+        skin: m.skin || 'default',
+        wins: m.wins || 0,
+        losses: m.losses || 0,
+        campaignDone: !!m.campaignDone,
+      };
+    } catch { return { gold: 0, upgrades: {}, unlocks: {}, skin: 'default', wins: 0, losses: 0, campaignDone: false }; }
+  }
+
+  _saveMeta() {
+    try { localStorage.setItem('hanjin_meta', JSON.stringify(this._meta)); } catch {}
+  }
+
+  _getTitle() {
+    if (this._meta.campaignDone) return '护国大将军';
+    let title = TITLE_DEFS[0].name;
+    for (const t of TITLE_DEFS) {
+      if (this._meta.wins >= t.wins) title = t.name;
+    }
+    return title;
+  }
+
+  // 兵种精锐加成后的属性（仅玩家部队生效）
+  _unitStats(type) {
+    const def = TROOP_DEFS[type];
+    const lv = Math.min(UPGRADE_MAX, this._meta.upgrades[type] || 0);
+    const mul = 1 + UPGRADE_BONUS * lv;
+    return { hp: Math.round(def.hp * mul), atk: Math.round(def.atk * mul), atkMul: mul };
+  }
+
+  _updateMetaDisplay() {
+    const mt = $('meta-title'), mg = $('meta-gold');
+    if (mt) mt.textContent = this._getTitle();
+    if (mg) mg.textContent = `◆ ${this._meta.gold}`;
+  }
+
+  // 主菜单 → 战功殿
+  _openShop() {
+    overlayStart.classList.add('hidden');
+    const shopOv = $('overlay-shop');
+    shopOv.classList.remove('hidden');
+    this._renderShop();
+  }
+
+  _closeShop() {
+    $('overlay-shop').classList.add('hidden');
+    overlayStart.classList.remove('hidden');
+    this._updateMetaDisplay();
+  }
+
+  _renderShop() {
+    const goldNum = $('shop-gold-num');
+    if (goldNum) goldNum.textContent = this._meta.gold;
+
+    // 新兵种解锁
+    const unlockKeys = Object.keys(UNLOCK_DEFS);
+    if (unlockKeys.length > 0) {
+      const sec = document.createElement('h3');
+      sec.className = 'shop-sec-title';
+      sec.textContent = '神兵阁（解锁新兵种）';
+      const unWrap = $('shop-unlocks');
+      if (unWrap) {
+        unWrap.innerHTML = '';
+        for (const type of unlockKeys) {
+          const u = UNLOCK_DEFS[type];
+          const owned = !!this._meta.unlocks[type];
+          const row = document.createElement('div');
+          row.className = 'shop-row';
+          const btnTxt = owned ? '已解锁' : (this._meta.gold >= u.price ? `◆${u.price} 解锁` : `◆${u.price}`);
+          row.innerHTML =
+            `<span class="sr-icon">${owned ? u.emoji : '🔒'}</span>` +
+            `<span class="sr-name">${u.name}</span>` +
+            `<span class="sr-desc">${u.desc}</span>` +
+            `<button class="sr-btn" ${owned || this._meta.gold < u.price ? 'disabled' : ''}>${btnTxt}</button>`;
+          const btn = row.querySelector('.sr-btn');
+          if (btn && !owned && this._meta.gold >= u.price) {
+            btn.addEventListener('click', () => this._buyUnlock(type));
+          }
+          unWrap.appendChild(row);
+        }
+      }
+    }
+
+    // 兵种精锐
+    const upWrap = $('shop-upgrades');
+    if (upWrap) {
+      upWrap.innerHTML = '';
+      for (const type of Object.keys(UPGRADE_DEFS)) {
+        const def = TROOP_DEFS[type];
+        const lv = Math.min(UPGRADE_MAX, this._meta.upgrades[type] || 0);
+        const price = UPGRADE_DEFS[type].price;
+        const row = document.createElement('div');
+        row.className = 'shop-row';
+        const stars = lv >= UPGRADE_MAX ? '已满级' : '★'.repeat(lv) + '☆'.repeat(UPGRADE_MAX - lv);
+        const btnTxt = lv >= UPGRADE_MAX ? '满级' : (this._meta.gold >= price ? `◆${price} 升级` : `◆${price}`);
+        row.innerHTML =
+          `<span class="sr-icon">${def.emoji}</span>` +
+          `<span class="sr-name">${def.name}</span>` +
+          `<span class="sr-stars">${stars}</span>` +
+          `<span class="sr-desc">${def.desc}</span>` +
+          `<button class="sr-btn" ${lv >= UPGRADE_MAX || this._meta.gold < price ? 'disabled' : ''}>${btnTxt}</button>`;
+        const btn = row.querySelector('.sr-btn');
+        if (btn && lv < UPGRADE_MAX && this._meta.gold >= price) {
+          btn.addEventListener('click', () => this._buyUpgrade(type));
+        }
+        upWrap.appendChild(row);
+      }
+    }
+
+    // 皮肤
+    const skWrap = $('shop-skins');
+    if (skWrap) {
+      skWrap.innerHTML = '';
+      for (const key of Object.keys(SKIN_DEFS)) {
+        const s = SKIN_DEFS[key];
+        const owned = key === 'default' || this._meta.skin === key;
+        const row = document.createElement('div');
+        row.className = 'shop-row skin-row';
+        const btnTxt = this._meta.skin === key ? '使用中' : (key === 'default' ? '使用' : (this._meta.gold >= s.cost ? `◆${s.cost} 购买` : `◆${s.cost}`));
+        row.innerHTML =
+          `<span class="sr-icon">⚑</span>` +
+          `<span class="sr-name">${s.name}</span>` +
+          `<span class="sr-desc">${s.desc}</span>` +
+          `<button class="sr-btn" ${this._meta.skin === key ? 'disabled' : (key !== 'default' && this._meta.gold < s.cost ? 'disabled' : '')}>${btnTxt}</button>`;
+        const btn = row.querySelector('.sr-btn');
+        if (btn && this._meta.skin !== key && (key === 'default' || this._meta.gold >= s.cost)) {
+          btn.addEventListener('click', () => this._buySkin(key));
+        }
+        skWrap.appendChild(row);
+      }
+    }
+
+    // 战绩
+    const st = $('shop-stats');
+    if (st) {
+      st.innerHTML =
+        `胜 <b>${this._meta.wins}</b> 场 · 负 <b>${this._meta.losses}</b> 场` +
+        ` · 称号 <b>${this._getTitle()}</b>` +
+        (this._meta.campaignDone ? ' · 已通关战役 🏆' : '');
+    }
+  }
+
+  _buyUpgrade(type) {
+    const def = UPGRADE_DEFS[type];
+    const lv = Math.min(UPGRADE_MAX, this._meta.upgrades[type] || 0);
+    if (lv >= UPGRADE_MAX || this._meta.gold < def.price) return;
+    this._meta.gold -= def.price;
+    this._meta.upgrades[type] = lv + 1;
+    this._saveMeta();
+    this.sound.buy();
+    this._showToast(`${TROOP_DEFS[type].name} 精锐升级！生命与攻击 +${Math.round(UPGRADE_BONUS * 100)}%`);
+    this._renderShop();
+  }
+
+  _buyUnlock(type) {
+    const u = UNLOCK_DEFS[type];
+    if (!u || this._meta.unlocks[type] || this._meta.gold < u.price) return;
+    this._meta.gold -= u.price;
+    this._meta.unlocks[type] = true;
+    this._saveMeta();
+    this.sound.buy();
+    this._showToast(`🎉 解锁新兵种：${u.name}！部署时就能召唤了`);
+    this._renderShop();
+  }
+
+  _buySkin(key) {
+    const s = SKIN_DEFS[key];
+    if (key !== 'default' && this._meta.gold < s.cost) return;
+    if (key !== 'default') this._meta.gold -= s.cost;
+    this._meta.skin = key;
+    this._saveMeta();
+    this._skinColors = SKIN_DEFS[key] || SKIN_DEFS.default;
+    this.sound.buy();
+    this._showToast(`军旗更换为「${s.name}」！`);
+    this._renderShop();
+  }
+
   // ---- 覆盖层控制 ----
   _showOverlay(name) {
     overlayStart.classList.toggle('hidden', name !== 'start');
@@ -192,6 +421,12 @@ class Game {
     overlayVictory.classList.toggle('hidden', name !== 'victory');
     troopBar.classList.toggle('visible', name === 'deployment');
     skillBar.classList.toggle('visible', name === 'battle');
+    const shopOv = $('overlay-shop');
+    if (shopOv) shopOv.classList.toggle('hidden', name !== 'shop');
+
+    // 战斗专用按钮（加速/暂停/退出/全军出击）
+    const battleActions = $('battle-actions');
+    if (battleActions) battleActions.classList.toggle('hidden', name !== 'battle');
 
     // 确保部署模式下按钮可见
     if (name === 'deployment') {
@@ -202,13 +437,18 @@ class Game {
     const hint = document.getElementById('control-hint');
     if (hint) hint.classList.toggle('visible', name === 'battle');
 
-    if (name === 'start') { this._renderAchievements(); }
+    if (name === 'start') {
+      this._renderAchievements();
+      this._updateMetaDisplay();
+    }
   }
 
   // ---- 事件绑定 ----
   _bindEvents() {
     // 开始游戏 → 进入阵营+战场选择合并画面
     $('btn-start-game').addEventListener('click', () => {
+      // 首次用户交互：启动背景音乐（浏览器要求手势后才能发声）
+      this.sound.startMusic();
       this._pendingSide = null;
       this._pendingMap = null;
       this._updateSetupUI();
@@ -222,6 +462,7 @@ class Game {
     // 选择地图（高亮 + 记录）
     $('btn-canyon').addEventListener('click', () => { this._pendingMap = 'canyon'; this._updateSetupUI(); });
     $('btn-forest').addEventListener('click', () => { this._pendingMap = 'forest'; this._updateSetupUI(); });
+    $('btn-snow').addEventListener('click', () => { this._pendingMap = 'snow'; this._updateSetupUI(); });
 
     // 选择难度（高亮 + 记录）
     ['easy', 'normal', 'hard'].forEach(d => {
@@ -238,10 +479,20 @@ class Game {
     document.querySelectorAll('.troop-token').forEach(el => {
       el.addEventListener('click', () => {
         const type = el.dataset.type;
+        // 新兵种需在战功殿解锁
+        if (UNLOCK_DEFS[type] && !this._meta.unlocks[type]) {
+          this._showToast(`🔒 ${UNLOCK_DEFS[type].name} 未解锁！去「战功殿」购买`);
+          return;
+        }
         const cost = parseInt(el.dataset.cost);
         if (this.deployPoints >= cost) {
           this.selectedType = type;
           this._updateTroopBarUI();
+          // 新手引导：已选兵种 → 提示放置
+          if (this._tutorial.active && this._tutorial.step === 0) {
+            this._tutShow('② 点击战场放置士兵', '移动鼠标到发亮区域，点击地面放下你的士兵！（右键可撤回）', 6000);
+            this._tutorial.step = 1;
+          }
         }
       });
     });
@@ -255,23 +506,149 @@ class Game {
     // 键盘控制
     document.addEventListener('keydown', (e) => this._onKeyDown(e));
 
-    // 触摸事件
+    // 触摸事件（双击全选 / 双指框选 / 长按指令菜单）
     canvas.addEventListener('touchstart', (e) => {
       e.preventDefault();
-      this._updateMouseFromEvent(e.touches[0]);
+      if (e.touches.length >= 2) {
+        // 双指框选
+        this._touch.drag = {
+          p1: { x: e.touches[0].clientX, y: e.touches[0].clientY },
+          p2: { x: e.touches[1].clientX, y: e.touches[1].clientY },
+        };
+        if (this._touch.longPressTimer) { clearTimeout(this._touch.longPressTimer); this._touch.longPressTimer = null; }
+        this._closeTouchMenu();
+        return;
+      }
+      const t = e.touches[0];
+      this._updateMouseFromEvent(t);
       if (this.state === State.DEPLOYMENT) {
         this._deployAtCursor();
-      } else if (this.state === State.BATTLE) {
-        this._handleBattleClick(e);
+        return;
+      }
+      if (this.state !== State.BATTLE) return;
+      this._closeTouchMenu(); // 新触摸时关闭旧菜单
+
+      // 双击全选
+      const now = Date.now();
+      if (this._touch.lastTap &&
+          now - this._touch.lastTap.t < 400 &&
+          Math.abs(t.clientX - this._touch.lastTap.x) < 90 &&
+          Math.abs(t.clientY - this._touch.lastTap.y) < 90) {
+        this._touch.lastTap = null;
+        if (this._touch.longPressTimer) { clearTimeout(this._touch.longPressTimer); this._touch.longPressTimer = null; }
+        this._selectAllOwn();
+        return;
+      }
+      this._touch.lastTap = { t: now, x: t.clientX, y: t.clientY };
+      this._touch.touchMoved = false;
+      this._touch.startX = t.clientX;
+      this._touch.startY = t.clientY;
+
+      // 长按弹出指令菜单（按在己方单位附近时）
+      const hx = this.mouseX, hy = this.mouseY;
+      let overOwn = false;
+      for (const u of this.units) {
+        if (u.hp <= 0 || u.side !== this.playerSide) continue;
+        const dx = u.x - hx, dy = u.y - hy;
+        if (dx * dx + dy * dy < 900) { overOwn = true; break; }
+      }
+      if (overOwn) {
+        if (this._touch.longPressTimer) clearTimeout(this._touch.longPressTimer);
+        this._touch.longPressTimer = setTimeout(() => {
+          this._touch.longPressActive = true;
+          this._showTouchMenu(t.clientX, t.clientY);
+        }, 550);
       }
     });
     canvas.addEventListener('touchmove', (e) => {
       e.preventDefault();
-      this._updateMouseFromEvent(e.touches[0]);
+      if (this._touch.drag && e.touches.length >= 2) {
+        this._touch.drag.p2 = { x: e.touches[1].clientX, y: e.touches[1].clientY };
+        return;
+      }
+      const t = e.touches[0];
+      this._updateMouseFromEvent(t);
+      if (Math.abs(t.clientX - this._touch.startX) > 24 || Math.abs(t.clientY - this._touch.startY) > 24) {
+        this._touch.touchMoved = true;
+        if (this._touch.longPressTimer) { clearTimeout(this._touch.longPressTimer); this._touch.longPressTimer = null; }
+        this._closeTouchMenu();
+      }
+    });
+    canvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      if (this._touch.drag) {
+        // 双指框选结算
+        const d = this._touch.drag;
+        this._touch.drag = null;
+        if (this.state === State.BATTLE) {
+          const a = this._clientToCanvas(d.p1.x, d.p1.y);
+          const b = this._clientToCanvas(d.p2.x, d.p2.y);
+          const x1 = Math.min(a.x, b.x), x2 = Math.max(a.x, b.x);
+          const y1 = Math.min(a.y, b.y), y2 = Math.max(a.y, b.y);
+          if (x2 - x1 > 20 || y2 - y1 > 20) {
+            this.selectedUnitIdxs = [];
+            for (let i = 0; i < this.units.length; i++) {
+              const u = this.units[i];
+              if (u.hp <= 0 || u.side !== this.playerSide) continue;
+              if (u.x >= x1 && u.x <= x2 && u.y >= y1 && u.y <= y2) this.selectedUnitIdxs.push(i);
+            }
+            if (this.selectedUnitIdxs.length > 0) this.selectedUnitIdx = this.selectedUnitIdxs[0];
+          }
+        }
+        return;
+      }
+      if (this._touch.longPressActive) {
+        this._touch.longPressActive = false;
+        return; // 长按已触发菜单，抑制单击
+      }
+      if (this._touch.longPressTimer) { clearTimeout(this._touch.longPressTimer); this._touch.longPressTimer = null; }
+      if (this.state === State.BATTLE && !this._touch.touchMoved) {
+        this._handleBattleClick(e);
+      }
     });
 
     // 自动部署
     $('btn-auto-deploy').addEventListener('click', () => this._autoDeploy());
+
+    // 清空部署
+    $('btn-clear-deploy').addEventListener('click', () => {
+      if (this.state !== State.DEPLOYMENT) return;
+      const refund = this.units.reduce((s, u) => s + (TROOP_DEFS[u.type] ? TROOP_DEFS[u.type].cost : 0), 0);
+      this.units = [];
+      this.deployPoints = DEPLOY_POINTS;
+      this.selectedType = null;
+      this._updateTroopBarUI();
+      this._showToast(refund > 0 ? '已清空部署，兵符全额返还！' : '战场空空，先点令牌选兵种吧');
+    });
+
+    // 全军出击 / 固守待命
+    $('btn-auto-advance').addEventListener('click', () => {
+      if (this.state !== State.BATTLE) return;
+      this._autoAdvance = !this._autoAdvance;
+      const btn = $('btn-auto-advance');
+      btn.classList.toggle('active', this._autoAdvance);
+      this._showToast(this._autoAdvance ? '全军出击！士兵自动冲向敌人' : '固守待命！等待你的指令');
+    });
+
+    // 加速 / 暂停 / 退出
+    $('btn-speed').addEventListener('click', () => this._toggleSpeed());
+    $('btn-pause').addEventListener('click', () => this._togglePause());
+    $('btn-quit').addEventListener('click', () => {
+      if (this.state !== State.BATTLE) return;
+      if (!this._quitArmed) {
+        this._quitArmed = true;
+        $('btn-quit').classList.add('confirm');
+        this._showToast('再点一次 ✕ 确认退出战斗');
+        setTimeout(() => {
+          this._quitArmed = false;
+          $('btn-quit').classList.remove('confirm');
+        }, 2500);
+        return;
+      }
+      this._quitArmed = false;
+      $('btn-quit').classList.remove('confirm');
+      this._resetGame();
+    });
 
     // 开始战斗
     btnStartBattle.addEventListener('click', () => this._startBattle());
@@ -288,26 +665,31 @@ class Game {
       $('btn-mute').classList.toggle('muted', !on);
     });
 
-    // 再来一局
-    $('btn-replay').addEventListener('click', () => this._resetGame());
+    // 再来一局（战役中胜利且未通关 → 「下一关」）
+    $('btn-replay').addEventListener('click', () => {
+      if (this.campaign.active && this._lastResult === 'win' &&
+          this.campaign.level < CAMPAIGN_DEFS.length - 1) {
+        this._nextCampaignLevel();
+      } else {
+        this._replaySame();
+      }
+    });
+
+    // 回主菜单
+    $('btn-home').addEventListener('click', () => this._resetGame());
+
+    // 战功殿
+    $('btn-shop').addEventListener('click', () => this._openShop());
+    $('btn-shop-close').addEventListener('click', () => this._closeShop());
+
+    // 战役模式入口
+    $('btn-campaign').addEventListener('click', () => this._startCampaign());
   }
 
   _updateMouseFromEvent(e) {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = CANVAS_W / rect.width;
-    const scaleY = CANVAS_H / rect.height;
-    this.mouseX = (e.clientX - rect.left) * scaleX;
-    this.mouseY = (e.clientY - rect.top) * scaleY;
-  }
-
-  _onCanvasClick(e) {
-    this._updateMouseFromEvent(e);
-
-    if (this.state === State.DEPLOYMENT) {
-      this._deployAtCursor();
-    } else if (this.state === State.BATTLE) {
-      this._handleBattleClick(e);
-    }
+    const p = this._clientToCanvas(e.clientX, e.clientY);
+    this.mouseX = p.x;
+    this.mouseY = p.y;
   }
 
   _onCanvasMouseDown(e) {
@@ -393,13 +775,197 @@ class Game {
   _onCanvasRightClick(e) {
     e.preventDefault();
     this._updateMouseFromEvent(e);
+
+    if (this.state === State.DEPLOYMENT) {
+      // 右键：撤回该位置的已部署单位，返还兵符
+      let removed = -1;
+      for (let i = 0; i < this.units.length; i++) {
+        const u = this.units[i];
+        const dx = u.x - this.mouseX, dy = u.y - this.mouseY;
+        if (dx * dx + dy * dy < 1600) { removed = i; break; } // 40²
+      }
+      if (removed >= 0) {
+        const u = this.units[removed];
+        const def = TROOP_DEFS[u.type];
+        this.deployPoints += def.cost;
+        this.units.splice(removed, 1);
+        this._showToast(`已撤回 ${def.name}，返还 ◆${def.cost}`);
+        this._updateTroopBarUI();
+      } else {
+        this._showToast('点中要撤回的士兵再右键；或点「清空」全部撤走');
+      }
+      return;
+    }
+
     if (this.state === State.BATTLE) {
       this.selectedUnitIdxs = [];
       this.selectedUnitIdx = -1;
     }
   }
 
+  // 客户端坐标 → 画布坐标
+  _clientToCanvas(cx, cy) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (cx - rect.left) * (CANVAS_W / rect.width),
+      y: (cy - rect.top) * (CANVAS_H / rect.height),
+    };
+  }
+
+  // 全选己方存活单位
+  _selectAllOwn() {
+    this.selectedUnitIdxs = [];
+    for (let i = 0; i < this.units.length; i++) {
+      const u = this.units[i];
+      if (u.hp > 0 && u.side === this.playerSide) this.selectedUnitIdxs.push(i);
+    }
+    if (this.selectedUnitIdxs.length > 0) {
+      this.selectedUnitIdx = this.selectedUnitIdxs[0];
+      this._showToast(`已全选 ${this.selectedUnitIdxs.length} 支部队！`);
+    } else {
+      this._showToast('没有可指挥的部队了');
+    }
+  }
+
+  _closeTouchMenu() {
+    const menu = $('touch-menu');
+    if (menu) menu.classList.add('hidden');
+  }
+
+  _showTouchMenu(clientX, clientY) {
+    const menu = $('touch-menu');
+    if (!menu || this.state !== State.BATTLE) return;
+    const sels = this._getSelectedUnits();
+    if (sels.length === 0) { this._selectAllOwn(); return; }
+    const items = [];
+    const title = sels.length === 1
+      ? `${this.units[sels[0]].name}（${TROOP_DEFS[this.units[sels[0]].type].name}）`
+      : `已选 ${sels.length} 支部队`;
+    const attack = () => this._touchAttackNearest(sels);
+    const gate = () => this._touchAttackGate(sels);
+    const hold = () => this._touchHold(sels);
+    const all = () => this._selectAllOwn();
+    items.push(['⚔ 进攻最近敌人', attack]);
+    if (this.playerSide === 'han') items.push(['🏯 破门攻城', gate]);
+    items.push(['🏳 固守待命', hold]);
+    items.push(['◎ 全选部队', all]);
+
+    menu.innerHTML = '';
+    const tt = document.createElement('div');
+    tt.className = 'tm-title';
+    tt.textContent = title;
+    menu.appendChild(tt);
+    for (const [label, act] of items) {
+      const b = document.createElement('button');
+      b.className = 'tm-item';
+      b.textContent = label;
+      b.addEventListener('click', () => {
+        this._closeTouchMenu();
+        act();
+      });
+      menu.appendChild(b);
+    }
+    const close = document.createElement('button');
+    close.className = 'tm-item';
+    close.textContent = '✕ 取消';
+    close.addEventListener('click', () => this._closeTouchMenu());
+    menu.appendChild(close);
+
+    menu.classList.remove('hidden');
+    // 定位（容器缩放坐标）
+    const crect = document.getElementById('game-container').getBoundingClientRect();
+    const scale = crect.width / 1100;
+    let left = (clientX - crect.left) / scale - 40;
+    let top = (clientY - crect.top) / scale - 10;
+    left = Math.max(4, Math.min(1096 - 150, left));
+    top = Math.max(4, Math.min(766 - 220, top));
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+  }
+
+  _touchAttackNearest(sels) {
+    for (const idx of sels) {
+      const u = this.units[idx];
+      if (!u || u.hp <= 0) continue;
+      const eIdx = this._findNearestEnemyFor(u);
+      if (eIdx >= 0) this._commandAttack(idx, eIdx);
+    }
+    this._showToast('全军进攻！');
+  }
+
+  _touchAttackGate(sels) {
+    for (const idx of sels) {
+      const u = this.units[idx];
+      if (!u || u.hp <= 0) continue;
+      this._commandAttackGate(idx);
+    }
+    this._showToast('集中火力破城门！');
+  }
+
+  _touchHold(sels) {
+    for (const idx of sels) {
+      const u = this.units[idx];
+      if (!u) continue;
+      u.cmdType = null; u.cmdTarget = null;
+    }
+    this._showToast('部队原地固守');
+  }
+
+  // 兵种令牌 hover 说明
+  _bindTroopTip() {
+    const tip = $('troop-tip');
+    if (!tip) return;
+    const tokens = document.querySelectorAll('.troop-token');
+    const container = document.getElementById('game-container');
+    for (const el of tokens) {
+      el.addEventListener('mouseenter', () => {
+        const type = el.dataset.type;
+        const def = TROOP_DEFS[type];
+        if (!def) return;
+        if (UNLOCK_DEFS[type] && !this._meta.unlocks[type]) {
+          tip.innerHTML = `<span class="tt-name">🔒 ${def.emoji} ${def.name}（◆${def.cost}）</span><div class="tt-desc">在「战功殿」神兵阁用战功金币解锁！</div>`;
+          tip.classList.remove('hidden');
+          const r2 = el.getBoundingClientRect();
+          const cr2 = container.getBoundingClientRect();
+          const sc2 = cr2.width / 1100;
+          const tx2 = (r2.left - cr2.left) / sc2 + r2.width / sc2 / 2;
+          const ty2 = (r2.top - cr2.top) / sc2 - 10;
+          tip.style.left = Math.max(4, Math.min(1096 - 224, tx2 - 100)) + 'px';
+          tip.style.top = Math.max(4, ty2 - 90) + 'px';
+          return;
+        }
+        tip.innerHTML =
+          `<span class="tt-name">${def.emoji} ${def.name}（◆${def.cost}）</span>` +
+          `<div class="tt-stats">生命 ${def.hp} · 攻击 ${def.atk} · 速度 ${def.speed} · 射程 ${def.range}</div>` +
+          `<div class="tt-desc">${def.desc || ''}</div>`;
+        tip.classList.remove('hidden');
+        const r = el.getBoundingClientRect();
+        const cr = container.getBoundingClientRect();
+        const scale = cr.width / 1100;
+        const tx = (r.left - cr.left) / scale + r.width / scale / 2;
+        const ty = (r.top - cr.top) / scale - 10;
+        tip.style.left = Math.max(4, Math.min(1096 - 224, tx - 100)) + 'px';
+        tip.style.top = Math.max(4, ty - 90) + 'px';
+      });
+      el.addEventListener('mouseleave', () => tip.classList.add('hidden'));
+    }
+  }
+
   _handleBattleClick(e) {
+    this._closeTouchMenu();
+    // 新手引导：小朋友开始手动指挥后，引导完成
+    if (this._tutorial.active && this._tutorial.step === 3) this._tutComplete();
+
+    // 商人点击购买
+    if (this._events.merchant) {
+      const m = this._events.merchant;
+      const dx = m.x - this.mouseX, dy = m.y - this.mouseY;
+      if (dx * dx + dy * dy < 1600) {
+        this._merchantClick();
+        return;
+      }
+    }
+
     // 查找点击位置的己方单位
     let clickedOwn = -1;
     let clickedEnemy = -1;
@@ -508,7 +1074,7 @@ class Game {
       btn.classList.toggle('selected', this._pendingSide === s);
     });
     // 高亮地图按钮
-    ['canyon','forest'].forEach(m => {
+    ['canyon','forest','snow'].forEach(m => {
       const btn = $('btn-' + m);
       btn.classList.toggle('selected', this._pendingMap === m);
     });
@@ -526,9 +1092,26 @@ class Game {
 
     this.playerSide = this._pendingSide;
     this.aiSide = this._pendingSide === 'han' ? 'jin' : 'han';
+    this.difficulty = this._pendingDiff;
+    this.mapType = this._pendingMap;
+    this._forestSeed = 12345;
+    this._setVsBadge(this.playerSide);
+    this._beginDeployment(DEPLOY_POINTS);
+
+    // 新手引导：首次游玩时提示先选兵种
+    if (!this._tutorial.done) this._tutStartDeploy();
+  }
+
+  // VS 徽章高亮
+  _setVsBadge(side) {
     const vsHan = vsBadge.querySelector('.vs-han');
     const vsJin = vsBadge.querySelector('.vs-jin');
-    if (this._pendingSide === 'han') {
+    if (!side) {
+      vsHan.style.color = ''; vsHan.style.textShadow = '';
+      vsJin.style.color = ''; vsJin.style.textShadow = '';
+      return;
+    }
+    if (side === 'han') {
       vsHan.style.color = '#E74C3C';
       vsHan.style.textShadow = '0 0 8px rgba(231,76,60,0.6)';
       vsJin.style.color = '';
@@ -539,16 +1122,21 @@ class Game {
       vsHan.style.color = '';
       vsHan.style.textShadow = '';
     }
+  }
 
-    this.difficulty = this._pendingDiff;
-    this.mapType = this._pendingMap;
-    this._forestSeed = 12345;
+  // 进入部署阶段（共享初始化：自由模式 / 战役 / 再战）
+  _beginDeployment(points) {
     this.state = State.DEPLOYMENT;
-    this.deployPoints = DEPLOY_POINTS;
+    this.deployPoints = points;
     this.units = [];
     this.selectedType = null;
     this.gateHP = GATE_MAX_HP;
-
+    this._celebration = null;
+    this._result = null;
+    this._paused = false;
+    this._speedMul = 1;
+    this._autoAdvance = true;
+    this._tutHide();
     pointsNum.textContent = this.deployPoints;
     this._updateTroopBarUI();
     this._showOverlay('deployment');
@@ -569,8 +1157,11 @@ class Game {
     document.querySelectorAll('.troop-token').forEach(el => {
       const cost = parseInt(el.dataset.cost);
       const type = el.dataset.type;
+      const locked = UNLOCK_DEFS[type] && !this._meta.unlocks[type];
       el.classList.toggle('selected', type === this.selectedType);
-      el.classList.toggle('disabled', this.deployPoints < cost);
+      el.classList.toggle('locked', !!locked);
+      // 锁定令牌保持可点击（弹出解锁提示），仅点数不足时禁用
+      el.classList.toggle('disabled', this.deployPoints < cost && !locked);
     });
     pointsNum.textContent = this.deployPoints;
   }
@@ -586,35 +1177,32 @@ class Game {
     if (!this._isInDeployZone(this.mouseX, this.mouseY)) return;
 
     // 碰撞检测（不与已有单位重叠）
-    const tooClose = this.units.some(u => {
-      const dx = u.x - this.mouseX;
-      const dy = u.y - this.mouseY;
-      return Math.sqrt(dx*dx + dy*dy) < 40;
-    });
-    if (tooClose) return;
+    if (this._isUnitCollision(this.mouseX, this.mouseY, 40)) return;
 
-    this.units.push({
-      type: this.selectedType,
-      name: SOLDIER_NAMES[Math.floor(Math.random() * SOLDIER_NAMES.length)],
-      x: this.mouseX,
-      y: this.selectedType === 'dragon' ? Math.max(200, Math.min(260, this.mouseY)) : this.mouseY,
-      hp: def.hp,
-      maxHP: def.hp,
-      side: this.playerSide,
-      state: 'idle',
-      targetX: null,
-      targetY: null,
-      atkCooldown: 0,
-      _sprite: Assets.get('unit_' + this.playerSide + '_' + this.selectedType),
-      _bobPhase: Math.random() * Math.PI * 2,
-      _attackFlash: 0,
-    });
+    // 精锐加成（兵符升级）
+    const stats = this._unitStats(this.selectedType);
+    const y = this.selectedType === 'dragon'
+      ? Math.max(200, Math.min(260, this.mouseY))
+      : this.mouseY;
+
+    this.units.push(this._createUnit(this.selectedType, this.mouseX, y, this.playerSide, {
+      hp: stats.hp,
+      atkMul: stats.atkMul,
+    }));
+
+    this.sound.deploy();
 
     this.deployPoints -= def.cost;
     if (this.deployPoints < def.cost) this.selectedType = null;
 
     pointsNum.textContent = this.deployPoints;
     this._updateTroopBarUI();
+
+    // 新手引导：已放第一个兵 → 提示出战
+    if (this._tutorial.active && this._tutorial.step === 1) {
+      this._tutShow('③ 点击「出 战」开始战斗！', '布置更多士兵（试试左边发光的🐉巨龙！），然后点击右下角红色「出 战」按钮', 7000);
+      this._tutorial.step = 2;
+    }
   }
 
   _isInDeployZone(x, y) {
@@ -715,6 +1303,10 @@ class Game {
   _onKeyDown(e) {
     if (this.state !== State.BATTLE) return;
 
+    // P 暂停 / 2 加速
+    if (e.key === 'p' || e.key === 'P') { this._togglePause(); return; }
+    if (e.key === '2') { this._toggleSpeed(); return; }
+
     // Tab 切换选中单位
     if (e.key === 'Tab') {
       e.preventDefault();
@@ -796,7 +1388,7 @@ class Game {
     const def = TROOP_DEFS[u.type];
     let range = def.range;
     if (isGate) range += 20;
-    if (this._weather.type === 'wind' && (u.type === 'catapult' || u.type === 'spear')) {
+    if (this._weather.type === 'wind' && (u.type === 'catapult' || u.type === 'spear' || u.type === 'bomber' || u.type === 'crossbow')) {
       range *= 1.5;
     }
     if (this._isOnHighGround(u.x, u.y)) range *= 1.2;
@@ -804,9 +1396,9 @@ class Game {
   }
 
   // 计算基础伤害（暴击/格挡前）
-  _calcDamage(u, target, hasAtkAura, isGate) {
+  _calcDamage(u, target, auraAtk, isGate) {
     const def = TROOP_DEFS[u.type];
-    let dmg = def.atk * (u._atkMul || 1); // AI 难度攻击倍率
+    let dmg = def.atk * (u._atkMul || 1); // AI 难度/精锐 攻击倍率
     const isPlayer = u.side === this.playerSide;
 
     if (isGate) {
@@ -817,7 +1409,7 @@ class Game {
 
     if (isPlayer && this._pickupBuffs.atk > 0) dmg *= 1.5;
     if (isPlayer && this._decreeBuff.atk > 0) dmg *= 1.15;
-    if (hasAtkAura) dmg *= (1 + TROOP_DEFS.strategist.atkAura);
+    if (auraAtk > 0) dmg *= (1 + auraAtk);
     if (this._isOnHighGround(u.x, u.y)) dmg *= 1.1;
 
     return dmg;
@@ -833,9 +1425,9 @@ class Game {
   }
 
   // 执行城门攻击全流程（伤害、CD、特效、音效）
-  _doGateAttack(u, def, hasAtkAura) {
+  _doGateAttack(u, def, auraAtk) {
     const gx = 860, gy = 340;
-    let dmg = this._calcDamage(u, null, hasAtkAura, true);
+    let dmg = this._calcDamage(u, null, auraAtk, true);
     const isCrit = Math.random() < this._getCritRate(u);
     if (isCrit) dmg *= 2;
 
@@ -896,8 +1488,52 @@ class Game {
     return nearest;
   }
 
+  // ---- 共享辅助：单位工厂 / 重叠检测 / 寻敌 ----
+  // 统一创建单位（玩家带精锐加成，AI 带难度倍率）
+  _createUnit(type, x, y, side, opts) {
+    opts = opts || {};
+    const def = TROOP_DEFS[type];
+    const hp = opts.hp != null ? opts.hp : def.hp;
+    const unit = {
+      type,
+      name: opts.name || SOLDIER_NAMES[Math.floor(Math.random() * SOLDIER_NAMES.length)],
+      x, y,
+      hp, maxHP: hp,
+      side, state: 'idle',
+      targetX: null, targetY: null, atkCooldown: 0,
+      _sprite: opts.sprite || Assets.get('unit_' + side + '_' + type),
+      _bobPhase: Math.random() * Math.PI * 2,
+      _attackFlash: 0,
+    };
+    if (opts.atkMul != null) unit._atkMul = opts.atkMul;
+    return unit;
+  }
+
+  // 位置是否与存活单位重叠
+  _isUnitCollision(x, y, r) {
+    const r2 = r * r;
+    for (const u of this.units) {
+      if (u.hp <= 0) continue;
+      const dx = u.x - x, dy = u.y - y;
+      if (dx * dx + dy * dy < r2) return true;
+    }
+    return false;
+  }
+
+  // 在 alive 列表中寻找最近敌人（maxRange 限定射程；不传则全图）
+  _findNearestEnemy(u, alive, maxRange) {
+    let nearest = null, nearestDist = maxRange != null ? maxRange * maxRange : Infinity;
+    for (const enemy of alive) {
+      if (enemy.side === u.side) continue;
+      const dx = enemy.x - u.x, dy = enemy.y - u.y;
+      const dist = dx * dx + dy * dy;
+      if (dist < nearestDist) { nearestDist = dist; nearest = enemy; }
+    }
+    return nearest;
+  }
+
   // ---- 玩家单位更新（每帧调用） ----
-  _updatePlayerUnit(u, def, alive, hasAtkAura, hasSpdDebuff, dt) {
+  _updatePlayerUnit(u, def, alive, auraAtk, hasSpdDebuff, dt) {
     // 清除失效指令
     if (u.cmdType === 'attack' && u.cmdTarget != null) {
       const t = this.units[u.cmdTarget];
@@ -908,21 +1544,44 @@ class Game {
       if (Math.sqrt(dx*dx + dy*dy) < 8) { u.cmdType = null; }
     }
 
-    // 无指令时自动反击范围内的敌人
+    // 无指令时：全军出击模式下自动寻找敌人冲锋；固守模式下仅反击射程内敌人
     if (!u.cmdType) {
-      let nearestEnemy = null, nearestDist = Infinity;
-      const autoRange = this._getEffectiveRange(u, false);
-      for (const enemy of alive) {
-        if (enemy.side === u.side) continue;
-        const dx = enemy.x - u.x, dy = enemy.y - u.y;
-        const dist = Math.sqrt(dx*dx + dy*dy);
-        if (dist < autoRange && dist < nearestDist) {
-          nearestDist = dist;
-          nearestEnemy = enemy;
+      if (this._autoAdvance) {
+        // 寻找最近的敌人（任意距离），主动接近并攻击
+        const nearestEnemy = this._findNearestEnemy(u, alive);
+        if (nearestEnemy) {
+          const autoRange = this._getEffectiveRange(u, false);
+          const dx = nearestEnemy.x - u.x, dy = nearestEnemy.y - u.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist <= autoRange) {
+            if (u.atkCooldown <= 0) this._doAttack(u, def, nearestEnemy, auraAtk, false);
+          } else {
+            const spd = this._getEffectiveSpeed(u, hasSpdDebuff);
+            this._moveToward(u, dx, dy, dist, spd, dt, true);
+          }
+          return;
         }
+        // 攻方没有敌人时 → 自动冲向城门；守方原地待命
+        if (this.playerSide === 'han') {
+          const gx = 860, gy = 340;
+          const dx = gx - u.x, dy = gy - u.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const gateRange = this._getEffectiveRange(u, true);
+          if (dist <= gateRange) {
+            if (u.atkCooldown <= 0) this._doGateAttack(u, def, auraAtk);
+          } else {
+            const spd = this._getEffectiveSpeed(u, hasSpdDebuff);
+            this._moveToward(u, dx, dy, dist, spd, dt, true);
+          }
+        }
+        return;
       }
+
+      // 固守模式：自动反击范围内的敌人
+      const autoRange = this._getEffectiveRange(u, false);
+      const nearestEnemy = this._findNearestEnemy(u, alive, autoRange);
       if (nearestEnemy) {
-        this._doAttack(u, def, nearestEnemy, hasAtkAura, false);
+        this._doAttack(u, def, nearestEnemy, auraAtk, false);
       }
       return;
     }
@@ -934,19 +1593,10 @@ class Game {
       if (dist < 5) { u.cmdType = null; return; }
 
       // 移动途中遇到敌人自动攻击
-      let nearestEnemy = null, nearestDist = Infinity;
       const autoRange = this._getEffectiveRange(u, false);
-      for (const enemy of alive) {
-        if (enemy.side === u.side) continue;
-        const edx = enemy.x - u.x, edy = enemy.y - u.y;
-        const edist = Math.sqrt(edx*edx + edy*edy);
-        if (edist < autoRange && edist < nearestDist) {
-          nearestDist = edist;
-          nearestEnemy = enemy;
-        }
-      }
+      const nearestEnemy = this._findNearestEnemy(u, alive, autoRange);
       if (nearestEnemy && u.atkCooldown <= 0) {
-        this._doAttack(u, def, nearestEnemy, hasAtkAura, false);
+        this._doAttack(u, def, nearestEnemy, auraAtk, false);
         return; // 攻击时不移动
       }
 
@@ -966,7 +1616,7 @@ class Game {
 
       if (dist <= atkRange) {
         if (u.atkCooldown <= 0) {
-          this._doAttack(u, def, t, hasAtkAura, false);
+          this._doAttack(u, def, t, auraAtk, false);
           if (t.hp <= 0) { u.cmdType = null; u.cmdTarget = null; }
         }
       } else {
@@ -986,7 +1636,7 @@ class Game {
 
       if (dist <= atkRange) {
         if (u.atkCooldown <= 0) {
-          this._doGateAttack(u, def, hasAtkAura);
+          this._doGateAttack(u, def, auraAtk);
         }
       } else {
         const spd = this._getEffectiveSpeed(u, hasSpdDebuff);
@@ -997,12 +1647,12 @@ class Game {
   }
 
   // 执行一次攻击（复用攻击逻辑）
-  _doAttack(u, def, target, hasAtkAura, isGate) {
+  _doAttack(u, def, target, auraAtk, isGate) {
     // Dragon breathes fire at target
     if (u.type === 'dragon' && !isGate) {
       this._dragonFireBreath(u, target.x, target.y);
     }
-    let dmg = this._calcDamage(u, target, hasAtkAura, false);
+    let dmg = this._calcDamage(u, target, auraAtk, false);
     const isCrit = Math.random() < this._getCritRate(u);
     if (isCrit) dmg *= 2;
 
@@ -1037,6 +1687,37 @@ class Game {
         });
       }
       this._onKill(target, u.type);
+    }
+
+    // ---- 范围溅射：火罐兵（灼烧）/ 战象（践踏） ----
+    if (u.type === 'bomber' || u.type === 'elephant') {
+      const splashR = u.type === 'bomber' ? 44 : 50;
+      const splashPct = u.type === 'bomber' ? 0.5 : 0.6;
+      const r2 = splashR * splashR;
+      for (const other of this.units) {
+        if (other === target || other.hp <= 0 || other.side === u.side) continue;
+        const dx = other.x - target.x, dy = other.y - target.y;
+        if (dx * dx + dy * dy < r2) {
+          const sdmg = dmg * splashPct;
+          other.hp -= sdmg;
+          other._lostSegFlash = 0.3;
+          this._addDamageNum(other.x, other.y - 28, Math.round(sdmg), false, 'normal');
+          if (u.type === 'bomber' && Math.random() < 0.6) {
+            this.particles.push({
+              x: other.x, y: other.y,
+              vx: (Math.random() - 0.5) * 30,
+              vy: -20 - Math.random() * 30,
+              life: 0.4 + Math.random() * 0.4, maxLife: 0.8,
+              color: null, size: 4 + Math.random() * 5, type: 'fire',
+            });
+          }
+          if (other.hp <= 0) {
+            other.hp = 0;
+            other._deathTime = this.battleElapsed;
+            this._onKill(other, u.type);
+          }
+        }
+      }
     }
   }
 
@@ -1080,9 +1761,38 @@ class Game {
   }
 
   // 攻击特效
+  // 粒子爆发（随机角度扩散，支持上偏/抖动/多色）
+  _burst(x, y, color, count, speedMin, speedMax, type, opts) {
+    opts = opts || {};
+    const up = opts.up || 0;
+    const life = opts.life != null ? opts.life : 0.6;
+    const lifeR = opts.lifeR || 0.4;
+    const maxLife = opts.maxLife != null ? opts.maxLife : life + lifeR;
+    const size = opts.size != null ? opts.size : 2;
+    const sizeR = opts.sizeR || 0;
+    const jx = (opts.jitter && opts.jitter.x) || 0;
+    const jy = (opts.jitter && opts.jitter.y) || 0;
+    const colors = Array.isArray(color) ? color : null;
+    for (let i = 0; i < count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = speedMin + Math.random() * (speedMax - speedMin);
+      const l = life + Math.random() * lifeR;
+      this.particles.push({
+        x: x + (Math.random() - 0.5) * jx,
+        y: y + (Math.random() - 0.5) * jy,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd - up,
+        life: l, maxLife,
+        color: colors ? colors[Math.floor(Math.random() * colors.length)] : color,
+        size: size + Math.random() * sizeR,
+        type: type || 'spark',
+      });
+    }
+  }
+
   _spawnAttackFX(u, tx, ty, isCrit, isGate) {
     const sideColor = u.side === 'han' ? '#E74C3C' : '#3498DB';
-    const meleeTypes = ['sword', 'spear', 'halberd', 'cavalry', 'shield', 'ram'];
+    const meleeTypes = ['sword', 'spear', 'halberd', 'cavalry', 'shield', 'ram', 'elephant', 'general'];
     const isMelee = meleeTypes.includes(u.type);
 
     // 攻击轨迹
@@ -1097,21 +1807,9 @@ class Game {
     });
 
     // 受击火花
-    const sparkCount = isCrit ? 8 : 4;
-    for (let i = 0; i < sparkCount; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 50 + Math.random() * 120;
-      this.particles.push({
-        x: tx, y: ty,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        life: 0.2 + Math.random() * 0.3,
-        maxLife: 0.5,
-        color: isCrit ? '#FFD700' : sideColor,
-        size: 1.5 + Math.random() * 2.5,
-        type: 'spark',
-      });
-    }
+    this._burst(tx, ty, isCrit ? '#FFD700' : sideColor, isCrit ? 8 : 4, 50, 170, 'spark', {
+      life: 0.2, lifeR: 0.3, maxLife: 0.5, size: 1.5, sizeR: 2.5,
+    });
 
     // 受击光晕
     if (isCrit) {
@@ -1153,12 +1851,19 @@ class Game {
     this.units = [];
     this.deployPoints = DEPLOY_POINTS;
 
+    // 已解锁的新兵种加入自动布阵
+    const extras = [];
+    if (this._meta.unlocks.bomber) extras.push('bomber', 'bomber');
+    if (this._meta.unlocks.elephant) extras.push('elephant');
+    if (this._meta.unlocks.general) extras.push('general');
+
     if (this.playerSide === 'han') {
       this._executeDeployPlan([
         'catapult','dragon','crossbow','crossbow','crossbow',
         'ram','ram','cavalry','cavalry','cavalry',
         'strategist','shield','shield','halberd','halberd',
         'spear','spear','spear','sword','sword','sword','sword',
+        ...extras,
       ]);
     } else {
       this._executeDeployPlan([
@@ -1166,6 +1871,7 @@ class Game {
         'strategist','shield','shield','shield','halberd',
         'halberd','cavalry','cavalry','cavalry','spear',
         'spear','spear','sword','sword','sword','sword',
+        ...extras,
       ]);
     }
 
@@ -1190,21 +1896,12 @@ class Game {
       for (let attempt = 0; attempt < 50; attempt++) {
         const x = baseZone.xMin + Math.random() * (baseZone.xMax - baseZone.xMin);
         const y = isDragon ? (200 + Math.random() * 60) : (baseZone.yMin + Math.random() * (baseZone.yMax - baseZone.yMin));
-        const tooClose = this.units.some(u => {
-          const dx = u.x - x;
-          const dy = u.y - y;
-          return Math.sqrt(dx*dx + dy*dy) < 45;
-        });
-        if (!tooClose) {
-          this.units.push({
-            type, name: SOLDIER_NAMES[Math.floor(Math.random() * SOLDIER_NAMES.length)],
-            x, y, hp: def.hp, maxHP: def.hp,
-            side: this.playerSide, state: 'idle',
-            targetX: null, targetY: null, atkCooldown: 0,
-            _sprite: Assets.get('unit_' + this.playerSide + '_' + type),
-            _bobPhase: Math.random() * Math.PI * 2,
-            _attackFlash: 0,
-          });
+        if (!this._isUnitCollision(x, y, 45)) {
+          const stats = this._unitStats(type);
+          this.units.push(this._createUnit(type, x, y, this.playerSide, {
+            hp: stats.hp,
+            atkMul: stats.atkMul,
+          }));
           pts -= def.cost;
           placed = true;
           break;
@@ -1216,17 +1913,13 @@ class Game {
   }
 
   // ---- 开始战斗 ----
-  _startBattle() {
-    if (this.units.length === 0) {
-      this._showToast('请先部署士兵！');
-      return;
-    }
-    this.state = State.BATTLE;
+  // 重置战斗状态字段（开战 / 重开共用）
+  _resetBattleFields(initialGold) {
     this.battleElapsed = 0;
     this._lastBattleTime = 0;
     this.combo = 0;
     this._comboDecay = 0;
-    this.gold = 0;
+    this.gold = initialGold;
     this.killCount = 0;
     this._catapultKills = 0;
     this.maxCombo = 0;
@@ -1240,29 +1933,52 @@ class Game {
     this._gateFlash = 0;
     this._lightningFlash = 0;
     this._skillsUsed = { fire: false, night: false, messenger: false, decree: false };
-    this._skills = {
-      fire:      { cd: 0, active: false, timer: 0 },
-      night:     { cd: 0, active: false, timer: 0 },
-      messenger: { cd: 0, active: false, timer: 0 },
-      decree:    { cd: 0, active: false, timer: 0 },
-    };
+    this._skills = {};
+    for (const key of Object.keys(SKILL_DEFS)) {
+      this._skills[key] = { cd: 0, active: false, timer: 0 };
+    }
     this._nightMode = false;
     this._weather = { type: 'clear', timer: 0, nextChange: 40 };
     this._terrain = [];
     this._chests = [];
     this._chestSpawnTimer = 0;
     this._chestSpawnDelay = 20;
+    this._events = { merchant: null, wolves: [] };
+    this._eventTimer = 0;
+    this._eventDelay = 18;
+    this._lightningStrike = null;
     this._pickupBuffs = { atk: 0, spd: 0 };
     this._messengerBuff = 0;
     this._decreeBuff = { atk: 0, enemySlow: 0 };
     this.selectedUnitIdxs = [];
     this.selectedUnitIdx = -1;
     this._cmdMarker = null;
+    this._speedMul = 1;
+    this._paused = false;
+    this._quitArmed = false;
+    this._autoAdvance = true;
+    this._celebration = null;
+    this._result = null;
+    this._lastResult = null;
+    this._gateBoom = false;
     comboDisplay.textContent = '';
     goldDisplay.textContent = `${this.gold}`;
     timerDisplay.textContent = '00:00';
     this._lastShownSec = -1;
     this._skillUIAccum = 1; // 第一帧立即刷新技能按钮状态
+    const spdBtn = $('btn-speed'); if (spdBtn) { spdBtn.textContent = '⏩'; spdBtn.classList.remove('active'); }
+    const psBtn = $('btn-pause'); if (psBtn) { psBtn.textContent = '⏸'; psBtn.classList.remove('active'); }
+    const advBtn = $('btn-auto-advance'); if (advBtn) advBtn.classList.add('active');
+    const qBtn = $('btn-quit'); if (qBtn) qBtn.classList.remove('confirm');
+  }
+
+  _startBattle() {
+    if (this.units.length === 0) {
+      this._showToast('请先部署士兵！');
+      return;
+    }
+    this.state = State.BATTLE;
+    this._resetBattleFields(START_GOLD);
 
     // 生成地形
     this._generateTerrain();
@@ -1272,6 +1988,12 @@ class Game {
 
     this._showOverlay('battle');
     btnStartBattle.style.display = 'none';
+
+    // 新手引导：第一次进入战斗，教小朋友怎么指挥
+    if (!this._tutorial.done) {
+      this._tutShow('④ 指挥你的部队！', '士兵已经自动冲锋！你还可以：点击/框选部队 → 点击敌人或城门进攻；按 ⚑ 可切换固守。看到上方技能条了吗？攒够金币就能放🔥火攻！', 9000);
+      this._tutorial.step = 3;
+    }
   }
 
   _spawnAIUnits() {
@@ -1283,7 +2005,10 @@ class Game {
 
     const plan = this._generateAIPlan(playerCount);
 
-    let pts2 = diff.budget;
+    // 战役模式用关卡专属 AI 预算，普通模式用难度预算
+    let pts2 = this.campaign.active
+      ? CAMPAIGN_DEFS[this.campaign.level].aiBudget
+      : diff.budget;
     for (let ti2 = 0; ti2 < plan.length; ti2++) {
       const type2 = plan[ti2];
       const def2 = TROOP_DEFS[type2];
@@ -1292,23 +2017,11 @@ class Game {
       for (let attempt2 = 0; attempt2 < 50; attempt2++) {
         const x2 = zone.xMin + Math.random() * (zone.xMax - zone.xMin);
         const y2 = isDragonAI ? 200 + Math.random() * 60 : zone.yMin + Math.random() * (zone.yMax - zone.yMin);
-        const tooClose2 = this.units.some(function(u2) {
-          const dx2 = u2.x - x2;
-          const dy2 = u2.y - y2;
-          return Math.sqrt(dx2*dx2 + dy2*dy2) < 45;
-        });
-        if (!tooClose2) {
-          this.units.push({
-            type: type2, name: SOLDIER_NAMES[Math.floor(Math.random() * SOLDIER_NAMES.length)],
-            x: x2, y: y2,
-            hp: Math.round(def2.hp * diff.hpMul), maxHP: Math.round(def2.hp * diff.hpMul),
-            side: this.aiSide, state: 'idle',
-            targetX: null, targetY: null, atkCooldown: 0,
-            _sprite: Assets.get('unit_' + this.aiSide + '_' + type2),
-            _bobPhase: Math.random() * Math.PI * 2,
-            _attackFlash: 0,
-            _atkMul: diff.atkMul,
-          });
+        if (!this._isUnitCollision(x2, y2, 45)) {
+          this.units.push(this._createUnit(type2, x2, y2, this.aiSide, {
+            hp: Math.round(def2.hp * diff.hpMul),
+            atkMul: diff.atkMul,
+          }));
           pts2 -= def2.cost;
           break;
         }
@@ -1336,8 +2049,8 @@ class Game {
 
     // Fill remaining slots with a balanced mix
     const tier2 = this.difficulty === 'easy'
-      ? ['spear', 'shield', 'crossbow']
-      : ['crossbow', 'shield', 'cavalry', 'halberd', 'spear', 'ram'];
+      ? ['spear', 'shield', 'crossbow', 'bomber']
+      : ['crossbow', 'shield', 'cavalry', 'halberd', 'spear', 'ram', 'bomber', 'elephant'];
     const tier1 = ['sword'];
 
     while (plan.length < targetCount && budget >= 1) {
@@ -1357,6 +2070,10 @@ class Game {
   _generateTerrain() {
     if (this.mapType === 'forest') {
       this._generateForestTerrain();
+      return;
+    }
+    if (this.mapType === 'snow') {
+      this._generateSnowTerrain();
       return;
     }
     this._terrain = [];
@@ -1435,6 +2152,57 @@ class Game {
     }
   }
 
+  _generateSnowTerrain() {
+    this._terrain = [];
+
+    // 雪松（可破坏障碍）
+    const trees = [
+      { x: 200, y: 380 }, { x: 300, y: 430 }, { x: 420, y: 370 },
+      { x: 520, y: 410 }, { x: 620, y: 360 }, { x: 720, y: 400 },
+      { x: 800, y: 375 }, { x: 350, y: 455 }, { x: 660, y: 445 },
+    ];
+    for (const t of trees) {
+      this._terrain.push({ type: 'tree', x: t.x, y: t.y, w: 24, h: 24, hp: 90, maxHP: 90 });
+    }
+
+    // 雪堆（低血量，可破坏）
+    const drifts = [
+      { x: 150, y: 350 }, { x: 340, y: 335 }, { x: 460, y: 355 },
+      { x: 580, y: 345 }, { x: 700, y: 335 }, { x: 250, y: 385 },
+      { x: 540, y: 375 },
+    ];
+    for (const d of drifts) {
+      this._terrain.push({ type: 'bush', x: d.x, y: d.y, w: 42 + Math.random() * 14, h: 16, hp: 45, maxHP: 45 });
+    }
+
+    // 冻土岩（不可破坏通行、可破坏）
+    const rocks = [
+      { x: 380, y: 400 }, { x: 650, y: 420 },
+    ];
+    for (const r of rocks) {
+      this._terrain.push({ type: 'rock', x: r.x, y: r.y, w: 32, h: 26, hp: 130, maxHP: 130 });
+    }
+
+    // 冰面（减速区域，踩上去打滑）
+    const ice = [
+      { x: 320, y: 465, w: 130, h: 35 },
+      { x: 580, y: 470, w: 140, h: 30 },
+    ];
+    for (const s of ice) {
+      this._terrain.push({ type: 'swamp', x: s.x, y: s.y, w: s.w, h: s.h, hp: Infinity, maxHP: Infinity });
+    }
+
+    // 雪原高地
+    const highGrounds = [
+      { x: 200, y: 315, w: 110, h: 38 },
+      { x: 690, y: 310, w: 125, h: 42 },
+      { x: 460, y: 340, w: 75, h: 32 },
+    ];
+    for (const hg of highGrounds) {
+      this._terrain.push({ type: 'highground', x: hg.x, y: hg.y, w: hg.w, h: hg.h, hp: Infinity, maxHP: Infinity });
+    }
+  }
+
   // ---- 重置游戏 ----
   _resetGame() {
     this.state = State.START_SCREEN;
@@ -1448,51 +2216,19 @@ class Game {
     this.deployPoints = DEPLOY_POINTS;
     this.selectedType = null;
     this.units = [];
-    this.gateHP = GATE_MAX_HP;
-    this.combo = 0;
-    this._comboDecay = 0;
-    this.gold = 0;
-    this.killCount = 0;
-    this._catapultKills = 0;
-    this.maxCombo = 0;
-    this.battleElapsed = 0;
-    this.damageNumbers = [];
-    this.particles = [];
-    this._screenShake = 0;
-    this._gateFlash = 0;
-    this._lastBattleTime = 0;
     this._shownAchievements = { ...this.unlockedAchievements };
-    this._skillsUsed = { fire: false, night: false, messenger: false, decree: false };
-    this._skills = {
-      fire:      { cd: 0, active: false, timer: 0 },
-      night:     { cd: 0, active: false, timer: 0 },
-      messenger: { cd: 0, active: false, timer: 0 },
-      decree:    { cd: 0, active: false, timer: 0 },
-    };
-    this._nightMode = false;
-    this._weather = { type: 'clear', timer: 0, nextChange: 40 };
-    this._terrain = [];
-    this._chests = [];
-    this._chestSpawnTimer = 0;
-    this._chestSpawnDelay = 20;
-    this._pickupBuffs = { atk: 0, spd: 0 };
-    this._messengerBuff = 0;
-    this._decreeBuff = { atk: 0, enemySlow: 0 };
-    this.selectedUnitIdxs = [];
-    this.selectedUnitIdx = -1;
-    this._cmdMarker = null;
+    this._resetBattleFields(0);
+    this._tutHide();
+    // 战役/触屏状态重置
+    this.campaign.active = false;
+    this.campaign.level = 0;
+    this._closeTouchMenu();
+    const banner = $('campaign-banner');
+    if (banner) banner.classList.add('hidden');
+    this._updateMetaDisplay();
     this._showOverlay('start');
     btnStartBattle.style.display = '';
-    const vsHan2 = vsBadge.querySelector('.vs-han');
-    const vsJin2 = vsBadge.querySelector('.vs-jin');
-    vsHan2.style.color = '';
-    vsHan2.style.textShadow = '';
-    vsJin2.style.color = '';
-    vsJin2.style.textShadow = '';
-    comboDisplay.textContent = '';
-    timerDisplay.textContent = '00:00';
-    this._lastShownSec = -1;
-    goldDisplay.textContent = '0';
+    this._setVsBadge(null);
     this._bgKey = null; // 菜单背景需按当前场景重绘
   }
 
@@ -1503,6 +2239,103 @@ class Game {
     el.textContent = msg;
     document.getElementById('game-container').appendChild(el);
     setTimeout(() => el.remove(), 2200);
+  }
+
+  // ---- 新手引导 ----
+  _tutStartDeploy() {
+    this._tutorial.active = true;
+    this._tutorial.step = 0;
+    this._tutShow('① 选择你的兵种', '点击下方令牌选择一个兵种，比如左边发光的 🐉巨龙！然后点战场放下它', 7000);
+  }
+
+  _tutShow(text, sub, ms) {
+    if (!this.tutorialBox) return;
+    this.tutorialBox.innerHTML = `<span class="tut-main">${text}</span><span class="tut-sub">${sub || ''}</span>`;
+    this.tutorialBox.classList.remove('hidden');
+    if (this._tutTimer) clearTimeout(this._tutTimer);
+    this._tutTimer = setTimeout(() => this._tutHide(), ms || 6000);
+  }
+
+  _tutHide() {
+    if (this.tutorialBox) this.tutorialBox.classList.add('hidden');
+    if (this._tutTimer) { clearTimeout(this._tutTimer); this._tutTimer = null; }
+  }
+
+  _tutComplete() {
+    this._tutorial.active = false;
+    this._tutorial.done = true;
+    try { localStorage.setItem('hanjin_tut_done', '1'); } catch {}
+    this._tutHide();
+  }
+
+  // ---- 战斗节奏控制 ----
+  _toggleSpeed() {
+    if (this.state !== State.BATTLE) return;
+    this._speedMul = this._speedMul === 1 ? 2 : 1;
+    const btn = $('btn-speed');
+    btn.textContent = this._speedMul === 2 ? '⏩⏩' : '⏩';
+    btn.classList.toggle('active', this._speedMul === 2);
+    this._showToast(this._speedMul === 2 ? '⚡ 2倍速行军！' : '恢复正常速度');
+  }
+
+  _togglePause() {
+    if (this.state !== State.BATTLE) return;
+    this._paused = !this._paused;
+    const btn = $('btn-pause');
+    btn.textContent = this._paused ? '▶' : '⏸';
+    btn.classList.toggle('active', this._paused);
+    this._showToast(this._paused ? '⏸ 已暂停' : '▶ 继续战斗');
+  }
+
+  // ---- 同配置再战：跳过选边/选图/难度，直接回到部署 ----
+  _replaySame() {
+    this._beginDeployment(this.campaign.active ? this.campaign.points : DEPLOY_POINTS);
+  }
+
+  // ---- 战役模式：3 关连续攻城（固定汉军攻方） ----
+  _startCampaign() {
+    this.campaign.active = true;
+    this.campaign.level = 0;
+    this._campaignSetup();
+  }
+
+  _campaignSetup() {
+    const lvl = CAMPAIGN_DEFS[this.campaign.level];
+    this.playerSide = 'han';
+    this.aiSide = 'jin';
+    this.mapType = lvl.map;
+    this.difficulty = lvl.diff;
+    this.campaign.points = lvl.points;
+    this._setVsBadge('han');
+    this._beginDeployment(lvl.points);
+    this._showCampaignBanner(this.campaign.level);
+  }
+
+  _nextCampaignLevel() {
+    this.campaign.level++;
+    this._campaignSetup();
+  }
+
+  _showCampaignBanner(level) {
+    const lvl = CAMPAIGN_DEFS[level];
+    const banner = $('campaign-banner');
+    if (!banner || !lvl) return;
+    banner.innerHTML = `<span class="cb-level">第 ${level + 1} 关 · ${lvl.name}</span><span class="cb-intro">${lvl.intro}</span>`;
+    banner.classList.remove('hidden');
+    clearTimeout(this._bannerTimer);
+    this._bannerTimer = setTimeout(() => banner.classList.add('hidden'), 4000);
+  }
+
+  // ---- 胜利庆祝烟花 ----
+  _spawnFirework() {
+    const x = 150 + Math.random() * 800;
+    const y = 70 + Math.random() * 150;
+    const colors = ['#FFD700', '#E74C3C', '#2ECC71', '#5DADE2', '#F39C12', '#FF6B6B', '#F0D68A'];
+    const c = colors[Math.floor(Math.random() * colors.length)];
+    this._burst(x, y, c, 26, 40, 130, 'confetti', {
+      life: 0.8, lifeR: 0.7, maxLife: 1.5, size: 2, sizeR: 3,
+    });
+    this.particles.push({ x, y, vx: 0, vy: 0, life: 0.25, maxLife: 0.25, color: '#fff', size: 6, type: 'spark' });
   }
 
   // ---- Combo 弹出 ----
@@ -1540,6 +2373,57 @@ class Game {
   // 渲染
   // ============================================================
 
+  // 一次性生成特效精灵（阴影/火焰/星芒/冲击光）
+  _makeFX(kind) {
+    const c = document.createElement('canvas');
+    const W = 40, H = 40;
+    c.width = W; c.height = H;
+    const g = c.getContext('2d');
+    if (kind === 'shadow') {
+      c.width = 32; c.height = 12;
+      const grad = g.createRadialGradient(16, 6, 2, 16, 6, 14);
+      grad.addColorStop(0, 'rgba(0,0,0,0.35)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.ellipse(16, 6, 14, 4, 0, 0, Math.PI * 2);
+      g.fill();
+    } else if (kind === 'fire') {
+      const grad = g.createRadialGradient(20, 20, 3, 20, 20, 19);
+      grad.addColorStop(0, 'rgba(255,255,200,0.95)');
+      grad.addColorStop(0.3, 'rgba(255,150,20,0.75)');
+      grad.addColorStop(0.7, 'rgba(255,60,0,0.45)');
+      grad.addColorStop(1, 'rgba(255,20,0,0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(20, 20, 19, 0, Math.PI * 2);
+      g.fill();
+    } else if (kind === 'star') {
+      const grad = g.createRadialGradient(20, 20, 0, 20, 20, 18);
+      grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+      grad.addColorStop(0.2, 'rgba(255,215,0,0.7)');
+      grad.addColorStop(1, 'rgba(255,215,0,0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(20, 20, 18, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = '#fff';
+      g.beginPath();
+      g.arc(20, 20, 4, 0, Math.PI * 2);
+      g.fill();
+    } else if (kind === 'impact') {
+      const grad = g.createRadialGradient(20, 20, 0, 20, 20, 19);
+      grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+      grad.addColorStop(0.3, 'rgba(255,200,50,0.65)');
+      grad.addColorStop(1, 'rgba(255,100,0,0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(20, 20, 19, 0, Math.PI * 2);
+      g.fill();
+    }
+    return c;
+  }
+
   _render() {
     ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
@@ -1566,6 +2450,7 @@ class Game {
     this._drawKillMarks();
     this._drawUnits();
     this._drawChests();
+    this._drawEvents();
     this._drawDeathAnimations();
     this._drawParticles();
     this._drawDamageNumbers();
@@ -1619,6 +2504,19 @@ class Game {
       ctx.setLineDash([]);
     }
 
+    // 暂停遮罩
+    if (this._paused) {
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+      ctx.fillStyle = '#F0D68A';
+      ctx.font = 'bold 42px "PingFang SC","Microsoft YaHei","Noto Serif SC",serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('⏸ 已暂停', CANVAS_W / 2, CANVAS_H / 2);
+      ctx.font = '16px "PingFang SC",sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillText('按 P 或点顶部 ▶ 继续战斗', CANVAS_W / 2, CANVAS_H / 2 + 36);
+    }
+
     // 战斗中的顶栏信息
     if (this.state === State.BATTLE && this.combo >= 8) {
       // 高连击时顶栏金光闪烁
@@ -1648,7 +2546,9 @@ class Game {
     ctx = this._bgCtx; // 临时切换全局 ctx 到缓存画布
     try {
       this._drawSkyStatic();
-      if (this.mapType === 'forest') this._drawForest(); else this._drawCanyon();
+      if (this.mapType === 'forest') this._drawForest();
+      else if (this.mapType === 'snow') this._drawSnowfield();
+      else this._drawCanyon();
       this._drawCastleStatic();
     } finally {
       ctx = savedCtx;
@@ -1656,6 +2556,40 @@ class Game {
   }
 
   _drawSkyStatic() {
+    if (this.mapType === 'snow') {
+      // 雪原天空 — 灰白阴沉
+      const grad = ctx.createLinearGradient(0, 0, 0, 280);
+      grad.addColorStop(0, '#B8C6D2');
+      grad.addColorStop(0.5, '#CFDAE2');
+      grad.addColorStop(1, '#E8EEF2');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, CANVAS_W, 280);
+      // 远山雪峰
+      ctx.fillStyle = '#A9B7C3';
+      ctx.beginPath();
+      for (let x = -40; x < 1140; x += 170) {
+        const h = 100 + this._rnd() * 55;
+        ctx.moveTo(x - 70, 280);
+        ctx.lineTo(x, 280 - h);
+        ctx.lineTo(x + 70, 280);
+      }
+      ctx.fill();
+      // 雪帽高光
+      ctx.fillStyle = '#F2F6F9';
+      for (let x = -40; x < 1140; x += 170) {
+        const h = 100 + this._rnd() * 55;
+        ctx.beginPath();
+        ctx.moveTo(x - 18, 280 - h * 0.55);
+        ctx.lineTo(x, 280 - h);
+        ctx.lineTo(x + 18, 280 - h * 0.55);
+        ctx.closePath(); ctx.fill();
+      }
+      // 云
+      this._drawCloudPNG(180, 60, 0.9, 'rgba(255,255,255,0.75)');
+      this._drawCloudPNG(620, 42, 1.0, 'rgba(255,255,255,0.75)');
+      this._drawCloudPNG(950, 75, 0.7, 'rgba(255,255,255,0.65)');
+      return;
+    }
     if (this.mapType === 'forest') {
       if (this._nightMode) {
         const grad = ctx.createLinearGradient(0, 0, 0, 280);
@@ -1906,6 +2840,26 @@ class Game {
     if (this._lightningFlash > 0) {
       ctx.fillStyle = `rgba(255,255,255,${this._lightningFlash * 0.3})`;
       ctx.fillRect(0, 0, 1100, 550);
+    }
+
+    // 雷击预警红圈（0.9 秒倒计时）
+    if (this._lightningStrike) {
+      const s = this._lightningStrike;
+      const pulse = 1 + Math.sin(Date.now() / 120) * 0.15;
+      const alpha = Math.max(0.25, s.warn / 0.9);
+      ctx.strokeStyle = `rgba(255,60,40,${alpha})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 44 * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = `rgba(255,60,40,${alpha * 0.15})`;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 44 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = `rgba(255,220,80,${alpha})`;
+      ctx.font = 'bold 18px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('⚡', s.x, s.y - 34);
     }
 
     if (this.mapType === 'forest') {
@@ -2308,6 +3262,99 @@ class Game {
     ctx.closePath();
   }
 
+  // 雪原背景 — 皑皑白雪 + 松林 + 雪路
+  _drawSnowfield() {
+    // 远景松林剪影
+    ctx.fillStyle = '#7C8B99';
+    ctx.beginPath();
+    for (let x = -20; x < 1140; x += 46 + this._rnd() * 26) {
+      const h = 55 + Math.sin(x * 0.05) * 22;
+      ctx.moveTo(x, 280);
+      ctx.lineTo(x + 14, 280 - h);
+      ctx.lineTo(x + 28, 280);
+    }
+    ctx.fill();
+
+    // 雪地地面（纹理 + 渐变）
+    ctx.fillStyle = '#EEF2F5';
+    ctx.fillRect(0, 280, CANVAS_W, CANVAS_H - 280);
+    const snowGrad = ctx.createLinearGradient(0, 280, 0, CANVAS_H);
+    snowGrad.addColorStop(0, 'rgba(255,255,255,0.75)');
+    snowGrad.addColorStop(0.4, 'rgba(235,240,245,0.5)');
+    snowGrad.addColorStop(1, 'rgba(180,200,215,0.55)');
+    ctx.fillStyle = snowGrad;
+    ctx.fillRect(0, 280, CANVAS_W, CANVAS_H - 280);
+
+    // 雪面微光点
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    for (let i = 0; i < 60; i++) {
+      const sx = 10 + this._rnd() * 1080;
+      const sy = 285 + this._rnd() * 250;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 1 + this._rnd() * 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 远处松树（雪挂）
+    for (let i = 0; i < 7; i++) {
+      const tx = 30 + i * 155;
+      const th = 85 + Math.sin(tx * 0.3) * 22;
+      // 树干
+      ctx.fillStyle = '#5D4A38';
+      ctx.fillRect(tx - 5, 280 - th * 0.35, 10, th * 0.35);
+      // 三层雪松冠
+      ctx.fillStyle = '#4A6B52';
+      for (let l = 0; l < 3; l++) {
+        const ly = 280 - th * (0.15 + l * 0.28);
+        const lw = 26 - l * 6;
+        ctx.beginPath();
+        ctx.moveTo(tx - lw, ly);
+        ctx.lineTo(tx, ly - th * 0.42);
+        ctx.lineTo(tx + lw, ly);
+        ctx.closePath();
+        ctx.fill();
+      }
+      // 雪帽
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.beginPath();
+      ctx.moveTo(tx - 14, 280 - th * 0.72);
+      ctx.lineTo(tx, 280 - th * 0.95);
+      ctx.lineTo(tx + 14, 280 - th * 0.72);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // 道路（被雪覆盖的土路）
+    ctx.fillStyle = 'rgba(150,165,175,0.5)';
+    ctx.beginPath();
+    ctx.moveTo(0, 400);
+    ctx.quadraticCurveTo(550, 370, 860, 390);
+    ctx.lineTo(860, 430);
+    ctx.quadraticCurveTo(550, 410, 0, 440);
+    ctx.closePath();
+    ctx.fill();
+    // 路上的雪痕
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 8; i++) {
+      const px = 60 + i * 130;
+      ctx.beginPath();
+      ctx.moveTo(px, 400 + Math.sin(px * 0.02) * 8);
+      ctx.lineTo(px + 40, 400 + Math.sin(px * 0.02) * 8 + 6);
+      ctx.stroke();
+    }
+
+    // 雪堆（近景）
+    ctx.fillStyle = 'rgba(230,238,244,0.8)';
+    for (let i = 0; i < 8; i++) {
+      const sx = 40 + this._rnd() * 1020;
+      const sy = 300 + this._rnd() * 180;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy, 22 + this._rnd() * 18, 7 + this._rnd() * 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   _drawCastleStatic() {
     const cx = 860, cy = 270;
 
@@ -2516,7 +3563,7 @@ class Game {
       ctx.fillStyle = `rgba(231,76,60,0.8)`;
       ctx.font = 'bold 14px "Noto Serif SC","PingFang SC",sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('漢 · 部署区', 270, 298);
+      ctx.fillText('汉 · 部署区', 270, 298);
     } else {
       const fillGrad = ctx.createLinearGradient(0, 280, 0, 480);
       fillGrad.addColorStop(0, `rgba(46,134,193,${0.08 * pulse})`);
@@ -2811,14 +3858,20 @@ class Game {
       const def = TROOP_DEFS[u.type];
       const isSelected = (this.selectedUnitIdxs.includes(i) && u.side === this.playerSide);
 
-      // 阴影
-      const shadowGrad = ctx.createRadialGradient(u.x, u.y + 23, 2, u.x, u.y + 23, 14);
-      shadowGrad.addColorStop(0, 'rgba(0,0,0,0.35)');
-      shadowGrad.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = shadowGrad;
-      ctx.beginPath();
-      ctx.ellipse(u.x, u.y + 23, 16, 4, 0, 0, Math.PI * 2);
-      ctx.fill();
+      // 阴影（预渲染精灵）
+      ctx.drawImage(this._fx.shadow, u.x - 16, u.y + 17, 32, 12);
+
+      // 军旗皮肤：脚下阵营色环
+      if (this._skinColors) {
+        const ringColor = u.side === 'han' ? this._skinColors.own : this._skinColors.enemy;
+        ctx.strokeStyle = ringColor;
+        ctx.globalAlpha = 0.3;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(u.x, u.y - 2, 20, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
 
       // 选中光环（大金圈 + 脉冲）
       if (isSelected) {
@@ -2853,13 +3906,13 @@ class Game {
         ctx.setLineDash([]);
       }
 
-      // 军师光环
-      if (u.type === 'strategist') {
-        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+      // 军师/大将军光环
+      if (u.type === 'strategist' || u.type === 'general') {
+        ctx.strokeStyle = u.type === 'general' ? 'rgba(240,214,138,0.25)' : 'rgba(255,255,255,0.1)';
         ctx.lineWidth = 1;
         ctx.setLineDash([3, 6]);
         ctx.beginPath();
-        ctx.arc(u.x, u.y, TROOP_DEFS.strategist.auraRange, 0, Math.PI * 2);
+        ctx.arc(u.x, u.y, TROOP_DEFS[u.type].auraRange, 0, Math.PI * 2);
         ctx.stroke();
         ctx.setLineDash([]);
       }
@@ -2884,8 +3937,8 @@ class Game {
           sx = -1;
         }
         ctx.scale(sx, sy);
-        const drawW = u.type === 'dragon' ? 72 : 48;
-        const drawH = u.type === 'dragon' ? 84 : 56;
+        const drawW = u.type === 'dragon' ? 72 : u.type === 'elephant' ? 66 : u.type === 'general' ? 54 : 48;
+        const drawH = u.type === 'dragon' ? 84 : u.type === 'elephant' ? 76 : u.type === 'general' ? 64 : 56;
         ctx.drawImage(finalSprite, -drawW/2, -drawH/2, drawW, drawH);
         ctx.restore();
       }
@@ -2902,8 +3955,10 @@ class Game {
         ctx.fill();
       }
 
-      // 名字
-      ctx.fillStyle = '#fff';
+      // 名字（皮肤时用阵营色）
+      ctx.fillStyle = (u.side === this.playerSide && this._skinColors)
+        ? (this.playerSide === 'han' ? this._skinColors.own : this._skinColors.enemy)
+        : '#fff';
       ctx.font = 'bold 8px "Noto Sans SC","PingFang SC",sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText(u.name, u.x, u.y - 32);
@@ -3047,185 +4102,6 @@ class Game {
   }
 
   // ---- 绘制单位头像（程序化生成） ----
-  _drawPortrait(cx, cy, r, u, def) {
-    // 根据名字生成一致的随机种子
-    const seed = (u.name || 'a').charCodeAt(0) * 31 + u.type.charCodeAt(0) * 7;
-    const rng = (max) => ((seed * 1103515245 + 12345) % 2147483648) / 2147483648 * max;
-    const pick = (arr) => arr[Math.floor(rng(arr.length))];
-
-    // 边框光环（阵营色）
-    const sideColor = u.side === 'han' ? '#E74C3C' : '#3498DB';
-    ctx.fillStyle = sideColor;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r + 2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // 脸型底色
-    const skinTones = ['#FDDCB5', '#F5D0A9', '#E8C39E', '#D4A574', '#F0C8A0'];
-    const skin = pick(skinTones);
-    ctx.fillStyle = skin;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fill();
-
-    // 头盔/帽子（根据兵种类型）
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.clip();
-
-    const helmetColors = {
-      sword: '#888', spear: '#777', halberd: '#666', cavalry: '#8B4513',
-      ram: '#5D4037', catapult: '#7F8C8D', crossbow: '#556B2F',
-      shield: '#4A5568', strategist: '#2C3E50', dragon: '#C0392B',
-    };
-    const hColor = helmetColors[u.type] || '#888';
-
-    switch (u.type) {
-      case 'sword':
-        // 锥形铁盔
-        ctx.fillStyle = hColor;
-        ctx.beginPath();
-        ctx.moveTo(cx - r, cy - 2);
-        ctx.lineTo(cx, cy - r - 6);
-        ctx.lineTo(cx + r, cy - 2);
-        ctx.closePath();
-        ctx.fill();
-        ctx.fillRect(cx - r, cy - 2, r * 2, r * 0.45);
-        break;
-      case 'spear':
-        // 尖顶盔
-        ctx.fillStyle = hColor;
-        ctx.beginPath();
-        ctx.moveTo(cx - r, cy);
-        ctx.lineTo(cx - r + 3, cy - r - 4);
-        ctx.lineTo(cx, cy - r - 8);
-        ctx.lineTo(cx + r - 3, cy - r - 4);
-        ctx.lineTo(cx + r, cy);
-        ctx.closePath();
-        ctx.fill();
-        break;
-      case 'halberd':
-        // 重盔
-        ctx.fillStyle = hColor;
-        ctx.fillRect(cx - r - 2, cy - r - 3, r * 2 + 4, r * 0.75);
-        ctx.fillStyle = '#555';
-        ctx.fillRect(cx - 3, cy - r - 5, 6, 4);
-        break;
-      case 'cavalry':
-        // 马鬃盔
-        ctx.fillStyle = hColor;
-        ctx.beginPath();
-        ctx.arc(cx, cy - 1, r + 1, Math.PI, 0);
-        ctx.fill();
-        ctx.fillStyle = '#C0392B';
-        ctx.beginPath();
-        ctx.moveTo(cx - 2, cy - r - 2);
-        ctx.lineTo(cx + 6, cy - r - 8);
-        ctx.lineTo(cx + 2, cy - r);
-        ctx.fill();
-        break;
-      case 'ram':
-        // 加固头盔
-        ctx.fillStyle = hColor;
-        ctx.fillRect(cx - r - 1, cy - r - 1, r * 2 + 2, r * 0.7);
-        ctx.strokeStyle = '#3E2723';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(cx - r, cy - 2);
-        ctx.lineTo(cx + r, cy - 2);
-        ctx.stroke();
-        break;
-      case 'catapult':
-        // 开面盔
-        ctx.fillStyle = hColor;
-        ctx.beginPath();
-        ctx.arc(cx, cy - 1, r + 1, Math.PI, 0);
-        ctx.fill();
-        ctx.fillStyle = skin;
-        ctx.fillRect(cx - 5, cy - 2, 10, 8);
-        break;
-      case 'crossbow':
-        // 轻皮帽
-        ctx.fillStyle = hColor;
-        ctx.beginPath();
-        ctx.ellipse(cx, cy - r * 0.2, r + 1, r * 0.5, 0, Math.PI, 0);
-        ctx.fill();
-        break;
-      case 'shield':
-        // 全罩盔
-        ctx.fillStyle = hColor;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r + 1, Math.PI * 1.1, Math.PI * 1.9);
-        ctx.fill();
-        ctx.fillStyle = '#333';
-        ctx.fillRect(cx - 3, cy - 1, 6, 2);
-        break;
-      case 'strategist':
-        // 文士冠
-        ctx.fillStyle = '#1a1a2e';
-        ctx.fillRect(cx - r, cy - r - 1, r * 2, 3);
-        ctx.fillRect(cx - 2, cy - r - 6, 4, 6);
-        break;
-    }
-    ctx.restore();
-
-    // 眼睛
-    const eyeY = cy - 1;
-    // 眼白
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.ellipse(cx - 5, eyeY, 3.5, 4, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(cx + 5, eyeY, 3.5, 4, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 瞳孔
-    ctx.fillStyle = '#1a1a2e';
-    ctx.beginPath();
-    ctx.arc(cx - 4, eyeY, 1.8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(cx + 6, eyeY, 1.8, 0, Math.PI * 2);
-    ctx.fill();
-    // 高光
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(cx - 3, eyeY - 1.5, 0.7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(cx + 7, eyeY - 1.5, 0.7, 0, Math.PI * 2);
-    ctx.fill();
-
-    // 眉毛
-    ctx.strokeStyle = '#4a3728';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(cx - 8, eyeY - 4);
-    ctx.lineTo(cx - 2, eyeY - 3);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(cx + 2, eyeY - 3);
-    ctx.lineTo(cx + 8, eyeY - 4);
-    ctx.stroke();
-
-    // 嘴巴（微笑）
-    ctx.strokeStyle = '#C96A4B';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(cx, cy + 5, 3.5, 0.1 * Math.PI, 0.9 * Math.PI);
-    ctx.stroke();
-
-    // 脸颊红晕
-    ctx.fillStyle = 'rgba(255,150,150,0.25)';
-    ctx.beginPath();
-    ctx.ellipse(cx - 8, cy + 2, 3, 2, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(cx + 8, cy + 2, 3, 2, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
   _isCursorNear(u) {
     const dx = u.x - this.mouseX;
     const dy = u.y - this.mouseY;
@@ -3290,15 +4166,7 @@ class Game {
 
       switch (p.type) {
         case 'fire': {
-          const grad = ctx.createRadialGradient(p.x, p.y, p.size * 0.1, p.x, p.y, p.size);
-          grad.addColorStop(0, 'rgba(255,255,200,0.9)');
-          grad.addColorStop(0.3, 'rgba(255,150,20,0.7)');
-          grad.addColorStop(0.7, 'rgba(255,60,0,0.4)');
-          grad.addColorStop(1, 'rgba(255,20,0,0)');
-          ctx.fillStyle = grad;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.drawImage(this._fx.fire, p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
           break;
         }
         case 'spark':
@@ -3318,6 +4186,22 @@ class Game {
           ctx.lineTo(p.x - 1, p.y + 10);
           ctx.stroke();
           break;
+        case 'snowflake':
+          ctx.fillStyle = 'rgba(255,255,255,0.9)';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+          // 六角星光
+          ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+          ctx.lineWidth = 0.8;
+          for (let k = 0; k < 3; k++) {
+            const a = k * Math.PI / 3 + p.life;
+            ctx.beginPath();
+            ctx.moveTo(p.x - Math.cos(a) * p.size * 2, p.y - Math.sin(a) * p.size * 2);
+            ctx.lineTo(p.x + Math.cos(a) * p.size * 2, p.y + Math.sin(a) * p.size * 2);
+            ctx.stroke();
+          }
+          break;
         case 'dust':
           ctx.fillStyle = 'rgba(139,119,90,0.5)';
           ctx.beginPath();
@@ -3325,18 +4209,8 @@ class Game {
           ctx.fill();
           break;
         case 'star': {
-          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size * 3);
-          grad.addColorStop(0, 'rgba(255,255,255,0.9)');
-          grad.addColorStop(0.2, 'rgba(255,215,0,0.7)');
-          grad.addColorStop(1, 'rgba(255,215,0,0)');
-          ctx.fillStyle = grad;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, p.size * 3, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = '#fff';
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-          ctx.fill();
+          const s = p.size * 6.7;
+          ctx.drawImage(this._fx.star, p.x - s / 2, p.y - s / 2, s, s);
           break;
         }
         case 'smoke':
@@ -3381,14 +4255,8 @@ class Game {
           break;
         }
         case 'impact': {
-          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
-          grad.addColorStop(0, 'rgba(255,255,255,0.9)');
-          grad.addColorStop(0.3, 'rgba(255,200,50,0.6)');
-          grad.addColorStop(1, 'rgba(255,100,0,0)');
-          ctx.fillStyle = grad;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-          ctx.fill();
+          const s = p.size * 2.1;
+          ctx.drawImage(this._fx.impact, p.x - s / 2, p.y - s / 2, s, s);
           break;
         }
         case 'explosion_png': {
@@ -3542,6 +4410,58 @@ class Game {
   // ============================================================
 
   _updateBattle(dt) {
+    // ---- 胜负庆祝（慢动作 + 烟花 + 破门爆炸） ----
+    if (this._celebration) {
+      this._celebration.t += dt;
+      if (this._result === 'win') {
+        if (Math.random() < 0.28) this._spawnFirework();
+        if (Math.random() < 0.1) {
+          this._birds.push({
+            x: 950 + Math.random() * 80, y: 120 + Math.random() * 60,
+            vx: 60 + Math.random() * 80, vy: -30 - Math.random() * 50,
+            life: 1.5, maxLife: 1.5, size: 3 + Math.random() * 3,
+          });
+        }
+      }
+      // 破门瞬间大爆炸
+      if (this.gateHP <= 0 && !this._gateBoom) {
+        this._gateBoom = true;
+        this._screenShake = 18;
+        this._gateFlash = 0.8;
+        for (let i = 0; i < 40; i++) {
+          this.particles.push({
+            x: 860 + (Math.random() - 0.5) * 60,
+            y: 340 + (Math.random() - 0.5) * 80,
+            vx: (Math.random() - 0.5) * 160,
+            vy: -60 - Math.random() * 120,
+            life: 0.6 + Math.random() * 0.9, maxLife: 1.5,
+            color: null, size: 4 + Math.random() * 12, type: 'fire',
+          });
+        }
+        for (let i = 0; i < 30; i++) {
+          this.particles.push({
+            x: 860, y: 340,
+            vx: (Math.random() - 0.5) * 200,
+            vy: (Math.random() - 0.5) * 200,
+            life: 0.4 + Math.random() * 0.5, maxLife: 0.9,
+            color: '#D4A84B', size: 2 + Math.random() * 4, type: 'spark',
+          });
+        }
+      }
+      this._updateParticles(dt); // 庆祝特效也要动起来
+      for (let i = this._killMarks.length - 1; i >= 0; i--) {
+        this._killMarks[i].life -= dt;
+        if (this._killMarks[i].life <= 0) this._killMarks.splice(i, 1);
+      }
+      if (this._celebration.t >= this._celebration.dur) {
+        this._celebration = null;
+        this.state = State.VICTORY;
+        if (this._result === 'win') this.sound.victory(); else this.sound.defeat();
+        this._showOverlay('victory');
+      }
+      return;
+    }
+
     // ---- 巨龙始终飞行在空中，并周期性吐火 ----
     for (let i = 0; i < this.units.length; i++) {
       const u = this.units[i];
@@ -3587,7 +4507,10 @@ class Game {
     if (this._weather.timer >= this._weather.nextChange) {
       this._weather.timer = 0;
       this._weather.nextChange = 15 + Math.random() * 25; // 15-40秒
-      const types = ['clear', 'rain', 'wind', 'storm', 'storm', 'storm', 'storm'];
+      // 风暴权重降到 2/7（雷雨频繁会让孩子觉得不公平）；雪原图含雪天
+      let types;
+      if (this.mapType === 'snow') types = ['clear', 'clear', 'wind', 'snow', 'snow', 'snow', 'storm'];
+      else types = ['clear', 'clear', 'rain', 'rain', 'wind', 'storm', 'storm'];
       this._weather.type = types[Math.floor(Math.random() * types.length)];
       const wdef = WEATHER_TYPES[this._weather.type];
       weatherIcon.textContent = wdef.name;
@@ -3618,6 +4541,15 @@ class Game {
         }
       }
     }
+    // 雪天飘雪
+    if (this._weather.type === 'snow' && Math.random() < 0.6) {
+      this.particles.push({
+        x: Math.random() * CANVAS_W, y: -5 - Math.random() * 20,
+        vx: -12 - Math.random() * 16, vy: 35 + Math.random() * 35,
+        life: 2.5, maxLife: 2.5, color: '#FFFFFF', size: 1.5 + Math.random() * 1.5,
+        type: 'snowflake',
+      });
+    }
     // 风天沙尘
     if (this._weather && this._weather.type === 'wind' && Math.random() < 0.4) {
       this.particles.push({
@@ -3640,32 +4572,45 @@ class Game {
           life: 0.8, maxLife: 0.8, color: null, size: 1.5, type: 'rain',
         });
       }
-      // 雷击随机伤害
-      if (Math.random() < 0.025) {
-        const allUnits = this.units.filter(u => u.hp > 0);
-        if (allUnits.length > 0) {
-          const victim = allUnits[Math.floor(Math.random() * allUnits.length)];
-          const boltDmg = 8 + Math.random() * 12;
-          victim.hp -= boltDmg;
+      // 雷击：先预警 0.9 秒（红圈提示可躲避），再劈下
+      if (!this._lightningStrike && Math.random() < 0.02) {
+        this._lightningStrike = {
+          x: 120 + Math.random() * 860,
+          y: 290 + Math.random() * 170,
+          warn: 0.9,
+        };
+      }
+      if (this._lightningStrike) {
+        this._lightningStrike.warn -= dt;
+        if (this._lightningStrike.warn <= 0) {
+          const s = this._lightningStrike;
+          this._lightningStrike = null;
           this._lightningFlash = 0.15;
-          this._addDamageNum(victim.x, victim.y - 28, Math.round(boltDmg), true, 'crit');
           this._screenShake = Math.max(this._screenShake, 5);
-          // 闪电粒子
-          for (let i = 0; i < 5; i++) {
+          // 落点火花
+          for (let i = 0; i < 14; i++) {
             this.particles.push({
-              x: victim.x + (Math.random() - 0.5) * 60, y: victim.y - 40 + Math.random() * 20,
-              vx: (Math.random() - 0.5) * 20, vy: -10 - Math.random() * 20,
+              x: s.x + (Math.random() - 0.5) * 30, y: s.y - 20,
+              vx: (Math.random() - 0.5) * 60, vy: -30 - Math.random() * 60,
               life: 0.3, maxLife: 0.3, color: null, size: 2, type: 'spark',
             });
           }
-          if (victim.hp <= 0) {
-            victim.hp = 0;
-            victim._deathTime = this.battleElapsed;
-            this._killMarks.push({
-              x: victim.x, y: victim.y + 15,
-              life: 3, maxLife: 3,
-            });
-            this._onKill(victim, 'storm');
+          // 伤害预警圈内的单位（双方都会中招，但可以躲开）
+          const dmg = 10 + Math.random() * 10;
+          for (const u of this.units) {
+            if (u.hp <= 0) continue;
+            const dx = u.x - s.x, dy = u.y - s.y;
+            if (Math.sqrt(dx * dx + dy * dy) < 48) {
+              u.hp -= dmg;
+              u._lostSegFlash = 0.3;
+              this._addDamageNum(u.x, u.y - 28, Math.round(dmg), true, 'crit');
+              if (u.hp <= 0) {
+                u.hp = 0;
+                u._deathTime = this.battleElapsed;
+                this._killMarks.push({ x: u.x, y: u.y + 15, life: 3, maxLife: 3 });
+                this._onKill(u, 'storm');
+              }
+            }
           }
         }
       }
@@ -3732,6 +4677,9 @@ class Game {
       }
     }
 
+    // ---- 随机中立事件 ----
+    this._updateEvents(dt);
+
     // ---- 拾取增益衰减 ----
     if (this._pickupBuffs.atk > 0) this._pickupBuffs.atk -= dt;
     if (this._pickupBuffs.spd > 0) this._pickupBuffs.spd -= dt;
@@ -3746,14 +4694,20 @@ class Game {
     // 按 x 排序：攻方从左到右、守方从右到左，前方单位优先
     alive.sort((a, b) => a.side === 'han' ? b.x - a.x : a.x - b.x);
 
-    // 预提取 strategist 列表，避免 O(n²) 扫描
-    const auraRangeSq = TROOP_DEFS.strategist.auraRange * TROOP_DEFS.strategist.auraRange;
-    const playerStrategists = [];
-    const enemyStrategists = [];
+    // 预提取光环单位（军师/大将军）列表，避免 O(n²) 扫描
+    const playerAuras = [];
+    const enemyAuras = [];
     for (const st of alive) {
-      if (st.type !== 'strategist') continue;
-      if (st.side === this.playerSide) playerStrategists.push(st);
-      else enemyStrategists.push(st);
+      if (st.type !== 'strategist' && st.type !== 'general') continue;
+      const ad = TROOP_DEFS[st.type];
+      const aura = {
+        x: st.x, y: st.y,
+        rangeSq: ad.auraRange * ad.auraRange,
+        atkBonus: ad.atkAura || 0,
+        slows: st.type === 'strategist', // 军师减速敌人，大将军不减
+      };
+      if (st.side === this.playerSide) playerAuras.push(aura);
+      else enemyAuras.push(aura);
     }
 
     // 预拆分阵营，AI 寻敌只需扫描敌对阵营
@@ -3769,24 +4723,25 @@ class Game {
       const def = TROOP_DEFS[u.type];
       const isAttacker = u.side === 'han';
 
-      // 军师光环（O(1) 预过滤，平方距离避免 sqrt）
-      let hasAtkAura = false, hasSpdDebuff = false;
-      if (u.type !== 'strategist') {
-        const friendlyStrats = (u.side === this.playerSide) ? playerStrategists : enemyStrategists;
-        const hostileStrats  = (u.side === this.playerSide) ? enemyStrategists : playerStrategists;
-        for (const st of friendlyStrats) {
-          const adx = u.x - st.x, ady = u.y - st.y;
-          if (adx * adx + ady * ady < auraRangeSq) { hasAtkAura = true; break; }
+      // 光环（军师/大将军，O(1) 预过滤，平方距离避免 sqrt）
+      let auraAtk = 0, hasSpdDebuff = false;
+      if (u.type !== 'strategist' && u.type !== 'general') {
+        const friendlyAuras = (u.side === this.playerSide) ? playerAuras : enemyAuras;
+        const hostileAuras  = (u.side === this.playerSide) ? enemyAuras : playerAuras;
+        for (const a of friendlyAuras) {
+          const adx = u.x - a.x, ady = u.y - a.y;
+          if (adx * adx + ady * ady < a.rangeSq) { auraAtk = Math.max(auraAtk, a.atkBonus); }
         }
-        for (const st of hostileStrats) {
-          const adx = u.x - st.x, ady = u.y - st.y;
-          if (adx * adx + ady * ady < auraRangeSq) { hasSpdDebuff = true; break; }
+        for (const a of hostileAuras) {
+          if (!a.slows) continue;
+          const adx = u.x - a.x, ady = u.y - a.y;
+          if (adx * adx + ady * ady < a.rangeSq) { hasSpdDebuff = true; break; }
         }
       }
 
       // 玩家单位：执行指令而非自动 AI
       if (u.side === this.playerSide) {
-        this._updatePlayerUnit(u, def, alive, hasAtkAura, hasSpdDebuff, dt);
+        this._updatePlayerUnit(u, def, alive, auraAtk, hasSpdDebuff, dt);
         continue;
       }
 
@@ -3831,7 +4786,7 @@ class Game {
 
         if (dist <= atkRange) {
           if (u.atkCooldown <= 0) {
-            this._doGateAttack(u, def, hasAtkAura);
+            this._doGateAttack(u, def, auraAtk);
           }
         } else {
           const spd = this._getEffectiveSpeed(u, hasSpdDebuff);
@@ -3848,7 +4803,7 @@ class Game {
 
         if (dist <= atkRange) {
           if (u.atkCooldown <= 0) {
-            this._doAttack(u, def, target, hasAtkAura, false);
+            this._doAttack(u, def, target, auraAtk, false);
           }
         } else {
           const spd = this._getEffectiveSpeed(u, hasSpdDebuff);
@@ -3858,26 +4813,7 @@ class Game {
     }
 
     // ---- 更新粒子 ----
-    for (const p of this.particles) {
-      p.x += p.vx * dt;
-      p.y += p.vy * dt;
-      p.life -= dt;
-      if (p.type === 'fire') { p.size += 8 * dt; p.vy -= 15 * dt; }
-      if (p.type === 'spark') { p.vy -= 30 * dt; p.vx *= 0.98; }
-      if (p.type === 'rain') { p.vy += 300 * dt; }
-      if (p.type === 'dust') { p.vy += 20 * dt; p.size += 2 * dt; }
-      if (p.type === 'star') { p.vy -= 10 * dt; p.size = 2 + Math.sin(p.life * 10) * 1; }
-      if (p.type === 'smoke') { p.size += 15 * dt; p.vx *= 0.95; p.vy *= 0.95; }
-      if (p.type === 'confetti') { p.vy += 80 * dt; p.vx += Math.sin(p.life * 8) * 30 * dt; }
-      if (p.type === 'slash') { /* static, just fades */ }
-      if (p.type === 'tracer') { /* static, just fades */ }
-      if (p.type === 'impact') { p.size += 60 * dt; p.vy -= 10 * dt; }
-    }
-    this.particles = this.particles.filter(p => p.life > 0);
-    // 粒子数量上限保护：防止特效刷屏导致内存/CPU 失控
-    if (this.particles.length > MAX_PARTICLES) {
-      this.particles.splice(0, this.particles.length - MAX_PARTICLES);
-    }
+    this._updateParticles(dt);
 
     // 击杀痕迹衰减
     for (let i = this._killMarks.length - 1; i >= 0; i--) {
@@ -3913,6 +4849,31 @@ class Game {
       maxLife: type === 'heal' ? 1.5 : type === 'crit' ? 1.2 : type === 'kill' ? 1.5 : 1.0,
       vy: type === 'heal' ? -30 : type === 'crit' ? -70 : type === 'kill' ? -50 : -50,
     });
+  }
+
+  // ---- 统一粒子更新（战斗与庆祝共用） ----
+  _updateParticles(dt) {
+    for (const p of this.particles) {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+      if (p.type === 'fire') { p.size += 8 * dt; p.vy -= 15 * dt; }
+      if (p.type === 'spark') { p.vy -= 30 * dt; p.vx *= 0.98; }
+      if (p.type === 'rain') { p.vy += 300 * dt; }
+      if (p.type === 'dust') { p.vy += 20 * dt; p.size += 2 * dt; }
+      if (p.type === 'snowflake') { p.x += Math.sin(p.life * 3 + p.y * 0.05) * 10 * dt; p.vy += 6 * dt; }
+      if (p.type === 'star') { p.vy -= 10 * dt; p.size = 2 + Math.sin(p.life * 10) * 1; }
+      if (p.type === 'smoke') { p.size += 15 * dt; p.vx *= 0.95; p.vy *= 0.95; }
+      if (p.type === 'confetti') { p.vy += 80 * dt; p.vx += Math.sin(p.life * 8) * 30 * dt; }
+      if (p.type === 'slash') { /* static, just fades */ }
+      if (p.type === 'tracer') { /* static, just fades */ }
+      if (p.type === 'impact') { p.size += 60 * dt; p.vy -= 10 * dt; }
+    }
+    this.particles = this.particles.filter(p => p.life > 0);
+    // 粒子数量上限保护：防止特效刷屏导致内存/CPU 失控
+    if (this.particles.length > MAX_PARTICLES) {
+      this.particles.splice(0, this.particles.length - MAX_PARTICLES);
+    }
   }
 
   // ---- 技能激活 ----
@@ -3989,7 +4950,7 @@ class Game {
       ? { xMin: 80, xMax: 300, yMin: 300, yMax: 470 }
       : { xMin: 520, xMax: 800, yMin: 300, yMax: 470 };
 
-    const types = ['sword', 'spear', 'halberd', 'cavalry', 'crossbow', 'shield'];
+    const types = ['sword', 'spear', 'halberd', 'cavalry', 'crossbow', 'shield', 'bomber', 'elephant'];
     const count = 3 + Math.floor(Math.random() * 2); // 3-4 units
 
     for (let i = 0; i < count; i++) {
@@ -3998,22 +4959,12 @@ class Game {
       for (let attempt = 0; attempt < 30; attempt++) {
         const x = zone.xMin + Math.random() * (zone.xMax - zone.xMin);
         const y = zone.yMin + Math.random() * (zone.yMax - zone.yMin);
-        const tooClose = this.units.some(u => {
-          if (u.hp <= 0) return false;
-          const dx = u.x - x;
-          const dy = u.y - y;
-          return Math.sqrt(dx*dx + dy*dy) < 40;
-        });
-        if (!tooClose) {
-          this.units.push({
-            type, name: SOLDIER_NAMES[Math.floor(Math.random() * SOLDIER_NAMES.length)],
-            x, y, hp: def.hp, maxHP: def.hp,
-            side: this.playerSide, state: 'idle',
-            targetX: null, targetY: null, atkCooldown: 0,
-            _sprite: Assets.get('unit_' + this.playerSide + '_' + type),
-            _bobPhase: Math.random() * Math.PI * 2,
-            _attackFlash: 0,
-          });
+        if (!this._isUnitCollision(x, y, 40)) {
+          const stats = this._unitStats(type);
+          this.units.push(this._createUnit(type, x, y, this.playerSide, {
+            hp: stats.hp,
+            atkMul: stats.atkMul,
+          }));
           // 传令兵抵达的尘土特效
           for (let j = 0; j < 10; j++) {
             this.particles.push({
@@ -4046,19 +4997,9 @@ class Game {
       this._addDamageNum(enemy.x, enemy.y - 28, Math.round(dmg), true, 'crit');
 
       // 每个敌人周围产生星星粒子
-      for (let i = 0; i < 15; i++) {
-        this.particles.push({
-          x: enemy.x + (Math.random() - 0.5) * 80,
-          y: enemy.y + (Math.random() - 0.5) * 40,
-          vx: (Math.random() - 0.5) * 100,
-          vy: -50 - Math.random() * 80,
-          life: 0.8 + Math.random() * 1.2,
-          maxLife: 2,
-          color: null,
-          size: 2 + Math.random() * 5,
-          type: 'star',
-        });
-      }
+      this._burst(enemy.x, enemy.y, null, 15, 0, 50, 'star', {
+        up: 50, life: 0.8, lifeR: 1.2, maxLife: 2, size: 2, sizeR: 5, jitter: { x: 80, y: 40 },
+      });
 
       if (enemy.hp <= 0) {
         enemy.hp = 0;
@@ -4139,19 +5080,9 @@ class Game {
     this.sound.chest();
 
     // 拾取粒子
-    for (let i = 0; i < 20; i++) {
-      const colors = ['#FFD700', '#FF6B00', '#FF4500', '#FFA500', '#FFEC8B'];
-      this.particles.push({
-        x: chest.x, y: chest.y,
-        vx: (Math.random() - 0.5) * 100,
-        vy: -50 - Math.random() * 80,
-        life: 0.6 + Math.random() * 0.6,
-        maxLife: 1.2,
-        color: colors[Math.floor(Math.random() * colors.length)],
-        size: 3 + Math.random() * 4,
-        type: 'confetti',
-      });
-    }
+    this._burst(chest.x, chest.y, ['#FFD700', '#FF6B00', '#FF4500', '#FFA500', '#FFEC8B'], 20, 0, 50, 'confetti', {
+      up: 50, life: 0.6, lifeR: 0.6, maxLife: 1.2, size: 3, sizeR: 4,
+    });
     // 闪光
     for (let i = 0; i < 8; i++) {
       this.particles.push({
@@ -4228,6 +5159,221 @@ class Game {
         ctx.fill();
       }
 
+      ctx.restore();
+    }
+  }
+
+  // ---- 随机中立事件（商人 / 山崩 / 狼群） ----
+  _updateEvents(dt) {
+    if (this.state !== State.BATTLE) return;
+
+    // 事件计时
+    this._eventTimer += dt;
+    if (this._eventTimer > this._eventDelay) {
+      this._eventTimer = 0;
+      this._eventDelay = 25 + Math.random() * 15;
+      const roll = Math.random();
+      if (roll < 0.4 && !this._events.merchant) {
+        this._spawnMerchant();
+      } else if (roll < 0.72) {
+        this._triggerLandslide();
+      } else {
+        this._spawnWolves();
+      }
+    }
+
+    // 商人消失计时
+    if (this._events.merchant) {
+      this._events.merchant.life -= dt;
+      if (this._events.merchant.life <= 0) {
+        this._events.merchant = null;
+        this._showToast('货郎等不到买家，挑着担子走了');
+      }
+    }
+
+    // 狼群移动与撕咬
+    for (let i = this._events.wolves.length - 1; i >= 0; i--) {
+      const w = this._events.wolves[i];
+      w.x += w.vx * dt;
+      w.y += Math.sin((w.x + w.phase) * 0.05) * 20 * dt; // 奔跑起伏
+      w.life -= dt;
+      if (w.life <= 0 || w.x < -60 || w.x > 1160) { this._events.wolves.splice(i, 1); continue; }
+      // 咬最近的单位
+      if (!w._biteCd) w._biteCd = 0;
+      w._biteCd -= dt;
+      if (w._biteCd <= 0) {
+        let best = null, bestD = 30 * 30;
+        for (const u of this.units) {
+          if (u.hp <= 0) continue;
+          const dx = u.x - w.x, dy = u.y - w.y;
+          const d = dx * dx + dy * dy;
+          if (d < bestD) { bestD = d; best = u; }
+        }
+        if (best) {
+          w._biteCd = 0.8;
+          best.hp -= 10;
+          best._hitFlash = 0.12;
+          best._lostSegFlash = 0.3;
+          this._addDamageNum(best.x, best.y - 28, 10, false, 'normal');
+          this.sound.hit();
+          if (best.hp <= 0) {
+            best.hp = 0;
+            best._deathTime = this.battleElapsed;
+            this._onKill(best, 'wolf');
+          }
+        }
+      }
+    }
+  }
+
+  _spawnMerchant() {
+    const x = 300 + Math.random() * 500;
+    const y = 310 + Math.random() * 120;
+    this._events.merchant = { x, y, life: 15 };
+    this._showToast('🧺 货郎来了！点击他花 ◆20 买「全军鼓舞」');
+  }
+
+  _merchantClick() {
+    const m = this._events.merchant;
+    if (!m) return;
+    if (this.gold < 20) {
+      this._showToast('金币不够…（需要 ◆20）');
+      return;
+    }
+    this.gold -= 20;
+    goldDisplay.textContent = `${this.gold}`;
+    this._events.merchant = null;
+    // 全军鼓舞：回复 20% 生命 + 10 秒攻击加成
+    for (const u of this.units) {
+      if (u.side === this.playerSide && u.hp > 0) {
+        u.hp = Math.min(u.maxHP, u.hp + u.maxHP * 0.2);
+        this._addDamageNum(u.x, u.y - 28, Math.round(u.maxHP * 0.2), false, 'heal');
+      }
+    }
+    this._pickupBuffs.atk = 10;
+    this.sound.buy();
+    this._showToast('战鼓齐鸣！全军鼓舞！');
+    for (let i = 0; i < 24; i++) {
+      this.particles.push({
+        x: m.x, y: m.y,
+        vx: (Math.random() - 0.5) * 120,
+        vy: -40 - Math.random() * 80,
+        life: 0.6 + Math.random() * 0.6, maxLife: 1.2,
+        color: ['#FFD700', '#FF6B00', '#F0D68A'][Math.floor(Math.random() * 3)],
+        size: 3 + Math.random() * 4, type: 'confetti',
+      });
+    }
+  }
+
+  _triggerLandslide() {
+    this._screenShake = Math.max(this._screenShake, 10);
+    this._showToast('山崩！滚石封路！');
+    const spots = [
+      { x: 380, y: 430 }, { x: 560, y: 420 }, { x: 700, y: 440 },
+    ];
+    for (const s of spots) {
+      if (Math.random() < 0.8) {
+        const w = 30 + Math.random() * 16;
+        const h = 26 + Math.random() * 12;
+        this._terrain.push({ type: 'rock', x: s.x, y: s.y, w, h, hp: 120, maxHP: 120 });
+      }
+    }
+    // 滚石尘土
+    for (let i = 0; i < 40; i++) {
+      this.particles.push({
+        x: 300 + Math.random() * 500,
+        y: 350 + Math.random() * 120,
+        vx: (Math.random() - 0.5) * 60,
+        vy: -30 - Math.random() * 50,
+        life: 0.5 + Math.random() * 0.7, maxLife: 1.2,
+        color: 'rgba(139,119,90,0.6)',
+        size: 5 + Math.random() * 8, type: 'dust',
+      });
+    }
+  }
+
+  _spawnWolves() {
+    this._showToast('🐺 狼群出没！小心它们咬人！');
+    for (let i = 0; i < 3; i++) {
+      this._events.wolves.push({
+        x: -40 - Math.random() * 60,
+        y: 300 + Math.random() * 140,
+        vx: 90 + Math.random() * 40,
+        life: 9, phase: Math.random() * Math.PI * 2,
+      });
+    }
+    for (let i = 0; i < 2; i++) {
+      this._events.wolves.push({
+        x: 1140 + Math.random() * 60,
+        y: 300 + Math.random() * 140,
+        vx: -(90 + Math.random() * 40),
+        life: 9, phase: Math.random() * Math.PI * 2,
+      });
+    }
+  }
+
+  _drawEvents() {
+    // 商人
+    if (this._events.merchant) {
+      const m = this._events.merchant;
+      const pulse = 1 + Math.sin(this.battleElapsed * 5) * 0.1;
+      const glow = ctx.createRadialGradient(m.x, m.y, 3, m.x, m.y, 30 * pulse);
+      glow.addColorStop(0, 'rgba(255,215,0,0.55)');
+      glow.addColorStop(0.4, 'rgba(255,215,0,0.15)');
+      glow.addColorStop(1, 'rgba(255,215,0,0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, 30 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#8B5A2B';
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, 13, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.font = '16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('🧺', m.x, m.y + 6);
+      ctx.fillStyle = '#F0D68A';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.fillText('◆20', m.x, m.y - 20);
+      // 剩余时间条
+      const pct = Math.max(0, m.life / 15);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(m.x - 16, m.y + 18, 32, 4);
+      ctx.fillStyle = '#F0D68A';
+      ctx.fillRect(m.x - 16, m.y + 18, 32 * pct, 4);
+    }
+    // 狼群
+    for (const w of this._events.wolves) {
+      const dir = w.vx > 0 ? 1 : -1;
+      ctx.save();
+      ctx.translate(w.x, w.y);
+      ctx.scale(dir, 1);
+      // 身体
+      ctx.fillStyle = '#7A7A7A';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 12, 7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 头
+      ctx.beginPath();
+      ctx.arc(11, -4, 6, 0, Math.PI * 2);
+      ctx.fill();
+      // 耳朵
+      ctx.fillStyle = '#5A5A5A';
+      ctx.beginPath();
+      ctx.moveTo(8, -9); ctx.lineTo(11, -14); ctx.lineTo(14, -9);
+      ctx.closePath(); ctx.fill();
+      // 眼睛
+      ctx.fillStyle = '#FFD700';
+      ctx.beginPath();
+      ctx.arc(13, -5, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      // 尾巴
+      ctx.strokeStyle = '#7A7A7A';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-10, -2);
+      ctx.quadraticCurveTo(-16, -8, -14, -14);
+      ctx.stroke();
       ctx.restore();
     }
   }
@@ -4320,6 +5466,7 @@ class Game {
         const def = SKILL_DEFS[key];
         const canUse = this.gold >= def.cost && sk.cd <= 0 && !sk.active;
         ui.btn.disabled = !canUse;
+        ui.btn.classList.toggle('ready', canUse); // 就绪时金色呼吸发光
 
         if (sk.active) {
           if (ui.name) ui.name.textContent = `${def.name} [激活]`;
@@ -4403,18 +5550,9 @@ class Game {
     else if (this.combo >= 5) comboBonus = 10;
 
     // 击杀粒子
-    for (let i = 0; i < 8; i++) {
-      this.particles.push({
-        x: target.x, y: target.y,
-        vx: (Math.random() - 0.5) * 80,
-        vy: -30 - Math.random() * 60,
-        life: 0.5 + Math.random() * 0.4,
-        maxLife: 0.9,
-        color: '#FFD700',
-        size: 2 + Math.random() * 3,
-        type: 'spark',
-      });
-    }
+    this._burst(target.x, target.y, '#FFD700', 8, 0, 40, 'spark', {
+      up: 30, life: 0.5, lifeR: 0.4, maxLife: 0.9, size: 2, sizeR: 3,
+    });
     for (let i = 0; i < 4; i++) {
       this.particles.push({
         x: target.x + (Math.random() - 0.5) * 20,
@@ -4447,6 +5585,7 @@ class Game {
   // ---- 胜负判定 ----
   _checkVictory() {
     if (this.state !== State.BATTLE) return;
+    if (this._celebration) return; // 庆祝中不再重复判定
 
     const hanAlive = this.units.filter(u => u.side === 'han' && u.hp > 0);
     const jinAlive = this.units.filter(u => u.side === 'jin' && u.hp > 0);
@@ -4469,23 +5608,42 @@ class Game {
 
   // ---- 战斗结束 ----
   _endBattle(result) {
-    this.state = State.VICTORY;
-
+    if (this._celebration) return; // 防止同帧重复触发
     const won = result === 'win';
-    if (won) this.sound.victory(); else this.sound.defeat();
-    const totalSec = Math.floor(this.battleElapsed);
-    const min = Math.floor(totalSec / 60);
-    const sec = totalSec % 60;
-    const timeStr = `${min}:${String(sec).padStart(2, '0')}`;
-    const hanAlive = this.units.filter(u => u.side === 'han' && u.hp > 0).length;
-    const jinAlive = this.units.filter(u => u.side === 'jin' && u.hp > 0).length;
-    const playerAlive = this.units.filter(u => u.side === this.playerSide && u.hp > 0).length;
 
-    // 星级评价
-    let stars = 0;
-    if (won) stars = 1;
-    if (won && playerAlive >= 3) stars = 2;
-    if (won && playerAlive >= 5 && this.maxCombo >= 5) stars = 3;
+    // 先播放庆祝特效（慢动作 + 烟花），结束后再显示战报
+    this._result = result;
+    this._lastResult = result;
+    this._celebration = { t: 0, dur: won ? 2.6 : 1.6 };
+    this._paused = false;
+    this._tutHide();
+
+    // ---- 战功殿入账与战役进度 ----
+    if (won) {
+      this._meta.wins++;
+      if (this.campaign.active && this.campaign.level >= CAMPAIGN_DEFS.length - 1) {
+        this._meta.campaignDone = true;
+        this._showToast('🏆 战役通关！称号晋升：护国大将军！');
+      }
+    } else {
+      this._meta.losses++;
+      this.campaign.active = false; // 战役失败即结束
+    }
+    const earn = won ? this.gold : Math.floor(this.gold * 0.5);
+    if (earn > 0) {
+      this._meta.gold += earn;
+      this._saveMeta();
+      this._showToast(`战功金币 +${earn} ◆（战功殿可升级兵种）`);
+    }
+    const replayBtn = $('btn-replay');
+    if (replayBtn) {
+      replayBtn.textContent = (this.campaign.active && won && this.campaign.level < CAMPAIGN_DEFS.length - 1)
+        ? '下一关'
+        : '再 战';
+    }
+
+    const totalSec = Math.floor(this.battleElapsed);
+    const playerAlive = this.units.filter(u => u.side === this.playerSide && u.hp > 0).length;
 
     // 成就检测
     if (won) this._unlockAchievement('first_win');
@@ -4507,15 +5665,15 @@ class Game {
 
     if (won) {
       victoryTitle.textContent = '大 捷';
-      victorySubtitle.textContent = this.playerSide === 'han' ? '漢軍破城 · 金軍潰散' : '金軍堅守 · 漢軍退卻';
+      victorySubtitle.textContent = this.playerSide === 'han' ? '汉军破城 · 金军溃散' : '金军坚守 · 汉军退却';
       seal.style.borderColor = this.playerSide === 'han' ? '#C0392B' : '#2E86C1';
-      sealText.textContent = this.playerSide === 'han' ? '勝' : '固';
+      sealText.textContent = this.playerSide === 'han' ? '胜' : '固';
       sealText.style.color = this.playerSide === 'han' ? '#C0392B' : '#2E86C1';
     } else {
-      victoryTitle.textContent = '敗 北';
-      victorySubtitle.textContent = '重整旗鼓 · 再戰沙場';
+      victoryTitle.textContent = '败 北';
+      victorySubtitle.textContent = '重整旗鼓 · 再战沙场';
       seal.style.borderColor = '#5D6D7E';
-      sealText.textContent = '敗';
+      sealText.textContent = '败';
       sealText.style.color = '#5D6D7E';
     }
 
@@ -4543,7 +5701,26 @@ class Game {
       }
     }
 
-    this._showOverlay('victory');
+    // 失败建议（军师献策）— 针对败因给出儿童能懂的建议
+    const advice = document.getElementById('defeat-advice');
+    if (!won) {
+      let msg = '再试一次！试试调整兵种搭配，军师的光环能大幅提升战力。';
+      if (this.killCount === 0) {
+        msg = '士兵没有出击！点顶部 ⚑「全军出击」，让部队主动冲向敌人。';
+      } else if (this.playerSide === 'han' && this.gateHP > GATE_MAX_HP * 0.6) {
+        msg = '破城太慢！多带撞门器（对城门3倍伤害）和投石车远程轰炸。';
+      } else if (playerAlive === 0) {
+        msg = '全军覆没！别让士兵落单，选中部队一起进攻，记得用技能支援。';
+      } else if (!this._skillsUsed.fire && !this._skillsUsed.decree) {
+        msg = '忘了用技能！攒够金币放「火攻」或「诏令」，能瞬间扭转战局。';
+      }
+      advice.textContent = '⚑ 军师献策：' + msg;
+      advice.style.display = 'block';
+    } else {
+      advice.style.display = 'none';
+    }
+
+    // 战报在庆祝特效结束后由 _updateBattle 显示
   }
 
   _drawKillMarks() {

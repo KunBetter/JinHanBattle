@@ -471,7 +471,7 @@ const Assets = (() => {
         ctx.fillStyle = '#F0D68A';
         ctx.font = 'bold 7px "Noto Serif SC", serif';
         ctx.textAlign = 'center';
-        ctx.fillText(faction === 'han' ? '漢' : '金', cx - 5, by - 5);
+        ctx.fillText(faction === 'han' ? '汉' : '金', cx - 5, by - 5);
         break;
 
       case 'strategist':
@@ -1248,7 +1248,7 @@ const Assets = (() => {
     ctx.fillStyle = '#F0D68A';
     ctx.font = 'bold 12px "Noto Serif SC", serif';
     ctx.textAlign = 'center';
-    ctx.fillText(faction === 'han' ? '漢' : '金', 33, 25);
+    ctx.fillText(faction === 'han' ? '汉' : '金', 33, 25);
 
     return c;
   }
@@ -1333,8 +1333,169 @@ const Assets = (() => {
   // Row index in rpg_characters_32x32.png for each unit type (12 cols x 21 rows, 32x32 cells)
   var RPG_CHAR_ROWS = { sword:0, spear:1, halberd:2, cavalry:3, ram:4, catapult:5, crossbow:6, shield:7, strategist:8 };
 
+  // 火罐兵 — 手持燃烧罐的投掷手
+  function _drawBomberSprite(faction) {
+    const c = _makeCanvas(U_W, U_H);
+    const ctx = _ctx(c);
+    const fc = FACTION[faction];
+    const cx = U_W / 2, by = U_H - 8;
+    // 阴影
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath(); ctx.ellipse(cx, by + 2, 13, 4, 0, 0, Math.PI * 2); ctx.fill();
+    // 腿
+    ctx.fillStyle = '#4A342A';
+    ctx.fillRect(cx - 8, by - 8, 6, 10);
+    ctx.fillRect(cx + 2, by - 8, 6, 10);
+    // 身体（深橙短打）
+    ctx.fillStyle = '#8B5A2B';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(cx - 9, by - 26, 18, 20, 3); else ctx.rect(cx - 9, by - 26, 18, 20);
+    ctx.fill();
+    // 腰带
+    ctx.fillStyle = '#5D3A1A';
+    ctx.fillRect(cx - 9, by - 12, 18, 3);
+    // 头
+    ctx.fillStyle = '#E8B98A';
+    ctx.beginPath(); ctx.arc(cx, by - 32, 6, 0, Math.PI * 2); ctx.fill();
+    // 头巾
+    ctx.fillStyle = fc;
+    ctx.beginPath(); ctx.arc(cx, by - 33, 6, Math.PI, Math.PI * 2); ctx.fill();
+    ctx.fillRect(cx - 6, by - 33, 12, 2);
+    // 手臂
+    ctx.strokeStyle = '#8B5A2B';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(cx - 6, by - 24); ctx.lineTo(cx - 14, by - 16); ctx.stroke();
+    // 燃烧罐
+    ctx.fillStyle = '#7A4A1B';
+    ctx.beginPath(); ctx.ellipse(cx - 14, by - 13, 6, 5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#B06A2A';
+    ctx.beginPath(); ctx.ellipse(cx - 14, by - 15, 4, 3, 0, 0, Math.PI * 2); ctx.fill();
+    // 罐口火焰
+    ctx.fillStyle = '#FF8C00';
+    ctx.beginPath();
+    ctx.moveTo(cx - 16, by - 17);
+    ctx.quadraticCurveTo(cx - 14, by - 24, cx - 12, by - 17);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#FFD700';
+    ctx.beginPath();
+    ctx.moveTo(cx - 15, by - 17);
+    ctx.quadraticCurveTo(cx - 14, by - 21, cx - 13, by - 17);
+    ctx.closePath(); ctx.fill();
+    return c;
+  }
+
+  // 战象 — 巨象 + 骑手
+  function _drawElephantSprite(faction) {
+    const c = _makeCanvas(U_W, U_H);
+    const ctx = _ctx(c);
+    const fc = FACTION[faction];
+    const cx = U_W / 2, by = U_H - 6;
+    // 阴影
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.ellipse(cx, by + 2, 20, 5, 0, 0, Math.PI * 2); ctx.fill();
+    // 四条腿
+    ctx.fillStyle = '#6E6259';
+    for (const lx of [cx - 13, cx - 5, cx + 5, cx + 13]) {
+      ctx.fillRect(lx - 2.5, by - 12, 5, 12);
+    }
+    // 身体
+    ctx.fillStyle = '#8D8178';
+    ctx.beginPath(); ctx.ellipse(cx, by - 20, 19, 14, 0, 0, Math.PI * 2); ctx.fill();
+    // 头部
+    ctx.beginPath(); ctx.arc(cx + 16, by - 26, 10, 0, Math.PI * 2); ctx.fill();
+    // 象鼻
+    ctx.strokeStyle = '#8D8178';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(cx + 22, by - 20);
+    ctx.quadraticCurveTo(cx + 30, by - 12, cx + 24, by - 6);
+    ctx.stroke();
+    // 耳朵
+    ctx.fillStyle = '#A89C92';
+    ctx.beginPath(); ctx.ellipse(cx + 8, by - 28, 7, 9, 0.3, 0, Math.PI * 2); ctx.fill();
+    // 象牙
+    ctx.fillStyle = '#FFF8E7';
+    ctx.beginPath();
+    ctx.moveTo(cx + 20, by - 18);
+    ctx.lineTo(cx + 26, by - 8);
+    ctx.lineTo(cx + 18, by - 14);
+    ctx.closePath(); ctx.fill();
+    // 眼睛
+    ctx.fillStyle = '#222';
+    ctx.beginPath(); ctx.arc(cx + 19, by - 28, 1.5, 0, Math.PI * 2); ctx.fill();
+    // 战鞍（阵营色）
+    ctx.fillStyle = fc;
+    ctx.fillRect(cx - 12, by - 36, 24, 6);
+    // 骑手
+    ctx.fillStyle = '#E8B98A';
+    ctx.beginPath(); ctx.arc(cx, by - 42, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = fc;
+    ctx.beginPath(); ctx.arc(cx, by - 43, 5, Math.PI, Math.PI * 2); ctx.fill();
+    return c;
+  }
+
+  // 大将军 — 披风 + 战旗
+  function _drawGeneralSprite(faction) {
+    const c = _makeCanvas(U_W, U_H);
+    const ctx = _ctx(c);
+    const fc = FACTION[faction];
+    const fl = FACTION_LIGHT[faction];
+    const cx = U_W / 2, by = U_H - 8;
+    // 阴影
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath(); ctx.ellipse(cx, by + 2, 14, 4, 0, 0, Math.PI * 2); ctx.fill();
+    // 披风（阵营色，向左飘）
+    ctx.fillStyle = fc;
+    ctx.beginPath();
+    ctx.moveTo(cx + 4, by - 30);
+    ctx.quadraticCurveTo(cx - 16, by - 18, cx - 18, by - 2);
+    ctx.lineTo(cx + 2, by - 6);
+    ctx.closePath(); ctx.fill();
+    // 腿
+    ctx.fillStyle = '#2E2A26';
+    ctx.fillRect(cx - 7, by - 8, 6, 10);
+    ctx.fillRect(cx + 2, by - 8, 6, 10);
+    // 铠甲
+    ctx.fillStyle = '#3D4A5A';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(cx - 9, by - 28, 18, 22, 3); else ctx.rect(cx - 9, by - 28, 18, 22);
+    ctx.fill();
+    // 金边
+    ctx.strokeStyle = '#F0D68A';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx - 9, by - 28, 18, 22);
+    // 护心镜
+    ctx.fillStyle = '#F0D68A';
+    ctx.beginPath(); ctx.arc(cx, by - 18, 3, 0, Math.PI * 2); ctx.fill();
+    // 头
+    ctx.fillStyle = '#E8B98A';
+    ctx.beginPath(); ctx.arc(cx, by - 34, 6, 0, Math.PI * 2); ctx.fill();
+    // 金盔 + 红缨
+    ctx.fillStyle = '#F0D68A';
+    ctx.beginPath(); ctx.arc(cx, by - 35, 6.5, Math.PI, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#E74C3C';
+    ctx.beginPath();
+    ctx.moveTo(cx - 1, by - 41);
+    ctx.quadraticCurveTo(cx + 3, by - 50, cx - 5, by - 48);
+    ctx.closePath(); ctx.fill();
+    // 战旗
+    ctx.strokeStyle = '#8B6914';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx + 6, by - 26); ctx.lineTo(cx + 14, by - 46); ctx.stroke();
+    ctx.fillStyle = fl;
+    ctx.beginPath();
+    ctx.moveTo(cx + 14, by - 46);
+    ctx.lineTo(cx + 26, by - 43);
+    ctx.lineTo(cx + 14, by - 38);
+    ctx.closePath(); ctx.fill();
+    return c;
+  }
+
   function _makeUnitFromPNG(faction, type) {
     if (type === 'dragon') return _makeDragonFromPNG(faction);
+    if (type === 'bomber') return _drawBomberSprite(faction);
+    if (type === 'elephant') return _drawElephantSprite(faction);
+    if (type === 'general') return _drawGeneralSprite(faction);
 
     var sheet = _pngCache['rpg_chars_sheet'];
     if (sheet) {
@@ -1414,7 +1575,7 @@ const Assets = (() => {
      ================================================================ */
 
   async function init() {
-    const unitTypes = ['sword','spear','halberd','cavalry','ram','catapult','crossbow','shield','strategist','dragon'];
+    const unitTypes = ['sword','spear','halberd','cavalry','ram','catapult','crossbow','shield','strategist','dragon','bomber','elephant','general'];
 
     // ===== Step 1: Generate procedural textures & sprites instantly =====
     cache.sprite_flag_han = _makeFlagSprite('han');
